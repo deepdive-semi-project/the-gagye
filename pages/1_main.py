@@ -1,6 +1,6 @@
 import os, io, json
 from datetime import datetime
-from typing import Optional
+from typing import Optional, Tuple, List
 
 import pandas as pd
 import streamlit as st
@@ -20,12 +20,19 @@ if "last_parsed" not in st.session_state:
 if "last_ocr_text" not in st.session_state:
     st.session_state["last_ocr_text"] = None
 
+# layout 기반 디버그용
+if "last_lines" not in st.session_state:
+    st.session_state["last_lines"] = None
+if "last_img_size" not in st.session_state:
+    st.session_state["last_img_size"] = None
+
 # =========================
 # Constants
 # =========================
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
-# 카테고리 재 분류 필요
+
+# 카테고리 재분류 필요
 DEFAULT_CATEGORIES = [
     "식비", "카페·간식", "교통·차량", "주거·통신", "생활용품",
     "쇼핑·의류", "의료·건강", "교육·자기계발", "문화·여가", "기타"
@@ -77,65 +84,149 @@ def get_vision_client():
 
 @st.cache_resource
 def get_openai_client():
+    # OPENAI_API_KEY 환경변수 필요
     return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 # =========================
-# OCR
+# OCR + Layout extraction (업그레이드 버전)
 # =========================
-def run_vision_ocr(img_bytes: bytes) -> str:
-    client = get_vision_client()
+def _bbox_to_xyxy_norm(bounding_poly, W, H):
+    xs = [v.x for v in bounding_poly.vertices]
+    ys = [v.y for v in bounding_poly.vertices]
+    x0, x1 = max(0, min(xs)), min(W, max(xs))
+    y0, y1 = max(0, min(ys)), min(H, max(ys))
+    return {"x0": round(x0 / W, 6), "y0": round(y0 / H, 6), "x1": round(x1 / W, 6), "y1": round(y1 / H, 6)}
+
+def _merge_boxes(boxes):
+    x0 = min(b["x0"] for b in boxes)
+    y0 = min(b["y0"] for b in boxes)
+    x1 = max(b["x1"] for b in boxes)
+    y1 = max(b["y1"] for b in boxes)
+    return {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
+
+def ocr_fulltext_and_lines_with_bbox_from_bytes(img_bytes: bytes) -> Tuple[str, list, int, int]:
+    """
+    Streamlit 업로드 bytes -> (full_text, lines, W, H)
+    lines: [{"text": "...", "bbox": {"x0","y0","x1","y1"}} ...]
+    """
+    client_vision = get_vision_client()
+
     image = vision.Image(content=img_bytes)
-    res = client.document_text_detection(image=image)
-    return res.full_text_annotation.text if res.full_text_annotation else ""
+    response = client_vision.document_text_detection(image=image)
+
+    if response.error.message:
+        raise RuntimeError(response.error.message)
+
+    annotation = response.full_text_annotation
+    full_text = annotation.text if annotation and annotation.text else ""
+
+    img = Image.open(io.BytesIO(img_bytes))
+    W, H = img.size
+
+    lines = []
+    cur_words, cur_boxes = [], []
+
+    if annotation and annotation.pages:
+        for page in annotation.pages:
+            for block in page.blocks:
+                for para in block.paragraphs:
+                    for word in para.words:
+                        word_text = "".join(sym.text for sym in word.symbols)
+                        word_box = _bbox_to_xyxy_norm(word.bounding_box, W, H)
+
+                        cur_words.append(word_text)
+                        cur_boxes.append(word_box)
+
+                        last_sym = word.symbols[-1]
+                        brk = (
+                            last_sym.property.detected_break.type
+                            if last_sym.property and last_sym.property.detected_break
+                            else None
+                        )
+
+                        if brk in (
+                            vision.TextAnnotation.DetectedBreak.BreakType.LINE_BREAK,
+                            vision.TextAnnotation.DetectedBreak.BreakType.EOL_SURE_SPACE,
+                        ):
+                            line_text = " ".join(cur_words).strip()
+                            if line_text:
+                                lines.append({"text": line_text, "bbox": _merge_boxes(cur_boxes)})
+                            cur_words, cur_boxes = [], []
+
+    if cur_words:
+        line_text = " ".join(cur_words).strip()
+        if line_text:
+            lines.append({"text": line_text, "bbox": _merge_boxes(cur_boxes)})
+
+    return full_text, lines, W, H
 
 # =========================
-# LLM (수정 필요(좀 더 업그레이드 된 것으로))
+# LLM (layout_hint 기반 업그레이드 버전)
 # =========================
-def parse_receipt_llm(text: str) -> dict:
-    client = get_openai_client()
+def parse_receipt_llm_with_layout(full_text: str, lines: list, W: int, H: int) -> dict:
+    client_llm = get_openai_client()
+    layout_hint = {"image_size": {"width": W, "height": H}, "lines": lines}
+
     prompt = f"""
-너는 가계부용 영수증 파서다.
-아래 OCR 텍스트를 JSON으로 구조화해라.
+너는 “가계부용 영수증 파서”다.
+입력은 (1) OCR 전체 텍스트(full_text)와 (2) OCR 라인별 bbox(layout_hint)다.
+이미지는 제공되지 않는다. 대신 bbox를 근거로 “위치”를 활용해 구조화하라.
 
-[출력 규칙]
-- 코드펜스 없이 JSON만 출력
-- 가능하면 아래 스키마를 따라라
+[중요]
+- bbox 목록은 위에서 아래로 읽힌 순서대로 처리한다.
+- 음수 금액(할인)은 새로운 품목이 아니며, 할인 라인은 바로 이전에 처리된 품목 1개에만 귀속한다.
+- item_discount와 order_discount는 항상 0 이하(음수 또는 0)로 출력한다.
+- 결제단(하단)에 있는 결제할인/총결제금액은 totals로 처리한다.
+- 출력은 코드펜스 없이 JSON만 출력한다.
 
-[스키마]
+[출력 스키마]
 {{
   "merchant_name": "string | null",
   "transaction_datetime": "YYYY-MM-DD HH:MM | null",
   "items": [
     {{
       "name": "string",
-      "net_amount": "number"
+      "qty": "number | null",
+      "unit_price": "number | null",
+      "gross_amount": "number | null",
+      "item_discount": "number",
+      "net_amount": "number",
+      "memo": "string | null"
     }}
   ],
   "totals": {{
+    "total_before_order_discount": "number | null",
+    "order_discount": "number | null",
+    "unassigned_item_discount": "number | null",
     "amount_paid": "number | null"
-  }}
+  }},
+  "confidence": "number",
+  "notes": "string | null"
 }}
 
-[OCR TEXT]
-\"\"\"{text}\"\"\"
+[OCR 텍스트(full_text)]
+\"\"\"{full_text}\"\"\"
+
+[레이아웃 힌트(layout_hint)]
+{json.dumps(layout_hint, ensure_ascii=False)}
 """.strip()
 
-    r = client.responses.create(
+    resp = client_llm.responses.create(
         model=MODEL,
-        input=prompt,
-        max_output_tokens=1500
+        max_output_tokens=2500,
+        input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
     )
 
-    raw = (r.output_text or "").strip()
-    start = raw.find("{")
-    end = raw.rfind("}")
+    text_out = (resp.output_text or "").strip()
+    start = text_out.find("{")
+    end = text_out.rfind("}")
     if start == -1 or end == -1 or end <= start:
-        raise ValueError(f"LLM output is not valid JSON:\n{raw}")
+        raise ValueError(f"LLM output is not valid JSON:\n{text_out}")
 
-    return json.loads(raw[start:end+1])
+    return json.loads(text_out[start:end + 1])
 
 # =========================
-# UI  (추가 수정 필요)
+# UI (수정 필요)
 # =========================
 st.title("🧾 영수증 입력")
 st.caption("종이 영수증 이미지를 업로드하면 자동으로 지출 데이터로 변환합니다.")
@@ -155,22 +246,28 @@ if img:
     if clear:
         st.session_state["last_parsed"] = None
         st.session_state["last_ocr_text"] = None
+        st.session_state["last_lines"] = None
+        st.session_state["last_img_size"] = None
         st.success("초기화 완료")
         st.rerun()
 
     if run_parse:
-        with st.spinner("OCR 처리 중..."):
-            ocr_text = run_vision_ocr(img_bytes)
-        st.session_state["last_ocr_text"] = ocr_text
+        with st.spinner("OCR + 레이아웃 추출 중..."):
+            full_text, lines, W, H = ocr_fulltext_and_lines_with_bbox_from_bytes(img_bytes)
+
+        st.session_state["last_ocr_text"] = full_text
+        st.session_state["last_lines"] = lines
+        st.session_state["last_img_size"] = (W, H)
 
         with st.spinner("LLM 파싱 중..."):
-            parsed = parse_receipt_llm(ocr_text)
+        
+            parsed = parse_receipt_llm_with_layout(full_text=full_text, lines=lines, W=W, H=H)
 
         st.session_state["last_parsed"] = parsed
         st.success("파싱 완료! 아래에서 적재할 수 있어요.")
 
 # =========================
-# 파싱 결과 
+# 파싱 결과
 # =========================
 parsed = st.session_state.get("last_parsed")
 
@@ -184,6 +281,12 @@ else:
 
     with st.expander("OCR 텍스트 보기(디버그)", expanded=False):
         st.text((st.session_state.get("last_ocr_text") or "")[:20000])
+
+    with st.expander("레이아웃 라인 보기(디버그)", expanded=False):
+        lines = st.session_state.get("last_lines") or []
+        size = st.session_state.get("last_img_size")
+        st.caption(f"lines={len(lines)}, image_size={size}")
+        st.json(lines[:50]) 
 
     # 적재 rows 만들기 (items가 없으면 totals로 1건이라도 적재)
     rows = []
@@ -212,12 +315,10 @@ else:
     with c1:
         do_load = st.button("✅ 적재하기", use_container_width=True, disabled=(len(rows) == 0))
 
-
     if do_load:
         df_add = pd.DataFrame(rows)
         add_rows_to_spend_df(df_add)
 
-        #  자동 월 이동 (추출된 날짜 데이터를 통해서)
         uploaded_month = normalize_month(parsed.get("transaction_datetime"))
         if uploaded_month != "Unknown":
             st.session_state["pending_month"] = uploaded_month
