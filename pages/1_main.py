@@ -64,6 +64,22 @@ def add_rows_to_spend_df(df_new: pd.DataFrame):
     if df_new is None or df_new.empty:
         return
 
+    #------------------------------------------
+    # st.session_state.spend_df 에 이미 등록된 항목은 df_new 에서 제외
+    for idx, row in st.session_state.spend_df.iterrows():
+        mask = (
+            (df_new["date_time"] == row["date_time"]) &
+            (df_new["merchant"] == row["merchant"]) &
+            (df_new["item"] == row["item"]) &
+            (df_new["amount"] == row["amount"])
+        )
+        df_new = df_new[~mask]
+
+    if df_new is None or df_new.empty:
+        st.toast(f"모든 항목이 중복되어 적재할 항목이 없습니다.", icon="⚠️")
+        return
+    #------------------------------------------
+    
     base = int(st.session_state.get("row_id_seq", 0))
     df_new = df_new.copy()
 
