@@ -32,11 +32,19 @@ if "last_img_size" not in st.session_state:
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
 
-# 카테고리 재분류 필요
-DEFAULT_CATEGORIES = [
-    "식비", "카페·간식", "교통·차량", "주거·통신", "생활용품",
-    "쇼핑·의류", "의료·건강", "교육·자기계발", "문화·여가", "기타"
-]
+CATEGORY_SCHEMA = {
+    "식비": ["외식", "배달", "카페", "편의점", "간식"],
+    "장보기": ["마트", "식재료", "생필품"],
+    "교통/차량": ["택시", "주유", "주차", "대중교통"],
+    "쇼핑/취미": ["의류", "도서", "운동", "온라인 쇼핑", "문구"],
+    "생활/주거": ["관리비", "통신비", "구독료", "약국"],
+    "교육": ["교육", "자기계발"],
+    "의료비": ["병원", "약국"],
+    "기타": ["경조사", "분류 미정 항목"],
+}
+
+DEFAULT_CATEGORIES = list(CATEGORY_SCHEMA.keys())
+
 
 # =========================
 # Helpers
@@ -167,6 +175,9 @@ def parse_receipt_llm_with_layout(full_text: str, lines: list, W: int, H: int) -
     client_llm = get_openai_client()
     layout_hint = {"image_size": {"width": W, "height": H}, "lines": lines}
 
+    category_rules = json.dumps(CATEGORY_SCHEMA, ensure_ascii=False, indent=2)
+    allowed_categories = ", ".join(DEFAULT_CATEGORIES)
+
     prompt = f"""
 너는 “가계부용 영수증 파서”다.
 입력은 (1) OCR 전체 텍스트(full_text)와 (2) OCR 라인별 bbox(layout_hint)다.
@@ -177,7 +188,15 @@ def parse_receipt_llm_with_layout(full_text: str, lines: list, W: int, H: int) -
 - 음수 금액(할인)은 새로운 품목이 아니며, 할인 라인은 바로 이전에 처리된 품목 1개에만 귀속한다.
 - item_discount와 order_discount는 항상 0 이하(음수 또는 0)로 출력한다.
 - 결제단(하단)에 있는 결제할인/총결제금액은 totals로 처리한다.
-- 출력은 코드펜스 없이 JSON만 출력한다.
+
+[카테고리 분류 규칙 — 반드시 준수]
+- "이마트", "홈플러스", "롯데마트", "코스트코", "GS더프레시", "노브랜드" 등
+  대형마트·식료품 중심 매장은 **반드시 "장보기"**
+- "쿠팡", "네이버쇼핑", "11번가", "G마켓", "옥션", "SSG", "무신사" 등
+  온라인 쇼핑몰은 **반드시 "쇼핑/취미"**
+- 카페, 베이커리, 편의점은 "식비"
+- 약국은 "의료비"
+- 위 규칙으로 판단 불가한 경우만 "기타"
 
 [출력 스키마]
 {{
@@ -191,6 +210,7 @@ def parse_receipt_llm_with_layout(full_text: str, lines: list, W: int, H: int) -
       "gross_amount": "number | null",
       "item_discount": "number",
       "net_amount": "number",
+      "category": "식비 | 장보기 | 교통/차량 | 쇼핑/취미 | 생활/주거 | 교육 | 의료비 | 기타",
       "memo": "string | null"
     }}
   ],
@@ -224,6 +244,7 @@ def parse_receipt_llm_with_layout(full_text: str, lines: list, W: int, H: int) -
         raise ValueError(f"LLM output is not valid JSON:\n{text_out}")
 
     return json.loads(text_out[start:end + 1])
+
 
 # =========================
 # UI (수정 필요)
@@ -291,13 +312,18 @@ else:
     # 적재 rows 만들기 (items가 없으면 totals로 1건이라도 적재)
     rows = []
     for it in (parsed.get("items") or []):
+        cat = (it.get("category") or "기타").strip()
+        if cat not in DEFAULT_CATEGORIES:
+            cat = "기타"
+
         rows.append({
             "date_time": parsed.get("transaction_datetime"),
             "merchant": parsed.get("merchant_name"),
             "item": it.get("name") or "",
-            "category": "기타",
+            "category": cat,
             "amount": float(it.get("net_amount", 0.0) or 0.0),
         })
+
 
     if not rows:
         amt = (parsed.get("totals") or {}).get("amount_paid")
