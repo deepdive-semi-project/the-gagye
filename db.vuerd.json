@@ -72,15 +72,15 @@
           "4E_YVNJh1Jd0554RyJzv7"
         ],
         "ui": {
-          "x": 62,
-          "y": 344,
+          "x": 63,
+          "y": 321,
           "zIndex": 2,
           "widthName": 67,
           "widthComment": 83,
           "color": ""
         },
         "meta": {
-          "updateAt": 1767672955990,
+          "updateAt": 1767674132315,
           "createAt": 1767666858505
         }
       },
@@ -138,15 +138,15 @@
           "HsC3MUwEqxGkCSH6R_ZKZ"
         ],
         "ui": {
-          "x": 648,
-          "y": 337,
+          "x": 631,
+          "y": 157,
           "zIndex": 165,
           "widthName": 60,
           "widthComment": 81,
           "color": ""
         },
         "meta": {
-          "updateAt": 1767673199389,
+          "updateAt": 1767674134682,
           "createAt": 1767672970410
         }
       }
@@ -539,16 +539,16 @@
         "comment": "(PK) 고유 식별자 / 자동 증가",
         "dataType": "INT",
         "default": "",
-        "options": 8,
+        "options": 10,
         "ui": {
-          "keys": 0,
+          "keys": 1,
           "widthName": 60,
           "widthComment": 152,
           "widthDataType": 60,
           "widthDefault": 60
         },
         "meta": {
-          "updateAt": 1767673037993,
+          "updateAt": 1767674283061,
           "createAt": 1767673013064
         }
       },
@@ -777,8 +777,8 @@
           "columnIds": [
             "BPsAYxqlaEIyc3MP1uyAW"
           ],
-          "x": 302.5,
-          "y": 344,
+          "x": 303.5,
+          "y": 321,
           "direction": 4
         },
         "meta": {
@@ -805,8 +805,8 @@
           "columnIds": [
             "36rCABrM6NE8Z0WUv2zGb"
           ],
-          "x": 648,
-          "y": 437,
+          "x": 631,
+          "y": 257,
           "direction": 1
         },
         "meta": {
