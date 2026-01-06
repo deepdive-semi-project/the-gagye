@@ -1,4 +1,3 @@
-# utils_state.py
 from datetime import datetime
 import pandas as pd
 import streamlit as st
@@ -23,3 +22,6 @@ def init_state():
 
     if "last_json_upload_key" not in st.session_state:
         st.session_state["last_json_upload_key"] = None
+
+    if "total_budgets" not in st.session_state:
+        st.session_state.total_budgets = {} 
