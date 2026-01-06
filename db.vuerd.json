@@ -125,6 +125,7 @@
           "-niXzT5ftlc83lp23d3cy",
           "BSCY0WoJaD99A6wdCR1M0",
           "36rCABrM6NE8Z0WUv2zGb",
+          "3--J0VmN37JNbgPYkqmm6",
           "zGZ5az47DjOiocEuhIinY",
           "HsC3MUwEqxGkCSH6R_ZKZ"
         ],
@@ -134,6 +135,7 @@
           "BSCY0WoJaD99A6wdCR1M0",
           "OUjYEPrNwypFIajakfwMB",
           "36rCABrM6NE8Z0WUv2zGb",
+          "3--J0VmN37JNbgPYkqmm6",
           "zGZ5az47DjOiocEuhIinY",
           "HsC3MUwEqxGkCSH6R_ZKZ"
         ],
@@ -146,7 +148,7 @@
           "color": ""
         },
         "meta": {
-          "updateAt": 1767674134682,
+          "updateAt": 1767680885960,
           "createAt": 1767672970410
         }
       }
@@ -671,6 +673,26 @@
           "updateAt": 1767673233935,
           "createAt": 1767673199389
         }
+      },
+      "3--J0VmN37JNbgPYkqmm6": {
+        "id": "3--J0VmN37JNbgPYkqmm6",
+        "tableId": "s_GDJxkzrXJ19K7fhs-Vu",
+        "name": "amount",
+        "comment": "예산 금액",
+        "dataType": "INT",
+        "default": "",
+        "options": 8,
+        "ui": {
+          "keys": 0,
+          "widthName": 60,
+          "widthComment": 60,
+          "widthDataType": 60,
+          "widthDefault": 60
+        },
+        "meta": {
+          "updateAt": 1767680883511,
+          "createAt": 1767680866222
+        }
       }
     },
     "relationshipEntities": {
@@ -806,7 +828,7 @@
             "36rCABrM6NE8Z0WUv2zGb"
           ],
           "x": 631,
-          "y": 257,
+          "y": 269,
           "direction": 1
         },
         "meta": {
