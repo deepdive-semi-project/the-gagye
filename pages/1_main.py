@@ -1,0 +1,374 @@
+import os, io, json
+from datetime import datetime
+from typing import Optional, Tuple
+
+import pandas as pd
+import streamlit as st
+from PIL import Image
+from google.cloud import vision
+from openai import OpenAI
+
+from utils_state import init_state, get_db_engine
+
+init_state()
+
+# -------------------------
+# Session vars
+# -------------------------
+if "last_parsed" not in st.session_state:
+    st.session_state["last_parsed"] = None
+
+if "last_ocr_text" not in st.session_state:
+    st.session_state["last_ocr_text"] = None
+
+# layout 기반 디버그용
+if "last_lines" not in st.session_state:
+    st.session_state["last_lines"] = None
+if "last_img_size" not in st.session_state:
+    st.session_state["last_img_size"] = None
+
+# =========================
+# Constants
+# =========================
+MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
+
+CATEGORY_SCHEMA = {
+    "식비": ["외식", "배달", "카페", "편의점", "간식"],
+    "장보기": ["마트", "식재료", "생필품"],
+    "교통/차량": ["택시", "주유", "주차", "대중교통"],
+    "쇼핑/취미": ["의류", "도서", "운동", "온라인 쇼핑", "문구"],
+    "생활/주거": ["관리비", "통신비", "구독료", "약국"],
+    "교육": ["교육", "자기계발"],
+    "의료비": ["병원", "약국"],
+    "기타": ["경조사", "분류 미정 항목"],
+}
+DEFAULT_CATEGORIES = list(CATEGORY_SCHEMA.keys())
+
+# =========================
+# Helpers
+# =========================
+def to_db_datetime(dt_str: Optional[str]) -> Optional[str]:
+    """LLM이 준 날짜를 DB용 'YYYY-MM-DD HH:MM:SS'로 정규화"""
+    if not dt_str:
+        return None
+    s = str(dt_str).strip()
+
+    for fmt in (
+        "%Y-%m-%d %H:%M:%S",
+        "%Y-%m-%d %H:%M",
+        "%Y-%m-%d",
+        "%Y.%m.%d %H:%M:%S",
+        "%Y.%m.%d %H:%M",
+        "%Y.%m.%d",
+        "%Y/%m/%d %H:%M:%S",
+        "%Y/%m/%d %H:%M",
+        "%Y/%m/%d",
+    ):
+        try:
+            d = datetime.strptime(s, fmt)
+            return d.strftime("%Y-%m-%d %H:%M:%S")
+        except Exception:
+            pass
+
+    # 파싱 실패 시 원문 그대로 반환
+    return s
+
+
+# =========================
+# Clients
+# =========================
+@st.cache_resource
+def get_vision_client():
+    return vision.ImageAnnotatorClient()
+
+
+@st.cache_resource
+def get_openai_client():
+    # OPENAI_API_KEY 환경변수 필요
+    return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+
+
+# =========================
+# OCR + Layout extraction
+# =========================
+def _bbox_to_xyxy_norm(bounding_poly, W, H):
+    xs = [v.x for v in bounding_poly.vertices]
+    ys = [v.y for v in bounding_poly.vertices]
+    x0, x1 = max(0, min(xs)), min(W, max(xs))
+    y0, y1 = max(0, min(ys)), min(H, max(ys))
+    return {"x0": round(x0 / W, 6), "y0": round(y0 / H, 6), "x1": round(x1 / W, 6), "y1": round(y1 / H, 6)}
+
+
+def _merge_boxes(boxes):
+    x0 = min(b["x0"] for b in boxes)
+    y0 = min(b["y0"] for b in boxes)
+    x1 = max(b["x1"] for b in boxes)
+    y1 = max(b["y1"] for b in boxes)
+    return {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
+
+
+def ocr_fulltext_and_lines_with_bbox_from_bytes(img_bytes: bytes) -> Tuple[str, list, int, int]:
+    client_vision = get_vision_client()
+
+    image = vision.Image(content=img_bytes)
+    response = client_vision.document_text_detection(image=image)
+
+    if response.error.message:
+        raise RuntimeError(response.error.message)
+
+    annotation = response.full_text_annotation
+    full_text = annotation.text if annotation and annotation.text else ""
+
+    img = Image.open(io.BytesIO(img_bytes))
+    W, H = img.size
+
+    lines = []
+    cur_words, cur_boxes = [], []
+
+    if annotation and annotation.pages:
+        for page in annotation.pages:
+            for block in page.blocks:
+                for para in block.paragraphs:
+                    for word in para.words:
+                        word_text = "".join(sym.text for sym in word.symbols)
+                        word_box = _bbox_to_xyxy_norm(word.bounding_box, W, H)
+
+                        cur_words.append(word_text)
+                        cur_boxes.append(word_box)
+
+                        last_sym = word.symbols[-1]
+                        brk = (
+                            last_sym.property.detected_break.type
+                            if last_sym.property and last_sym.property.detected_break
+                            else None
+                        )
+
+                        if brk in (
+                            vision.TextAnnotation.DetectedBreak.BreakType.LINE_BREAK,
+                            vision.TextAnnotation.DetectedBreak.BreakType.EOL_SURE_SPACE,
+                        ):
+                            line_text = " ".join(cur_words).strip()
+                            if line_text:
+                                lines.append({"text": line_text, "bbox": _merge_boxes(cur_boxes)})
+                            cur_words, cur_boxes = [], []
+
+    if cur_words:
+        line_text = " ".join(cur_words).strip()
+        if line_text:
+            lines.append({"text": line_text, "bbox": _merge_boxes(cur_boxes)})
+
+    return full_text, lines, W, H
+
+
+# =========================
+# LLM (Transactions 1행 형태)
+# =========================
+def parse_receipt_llm_to_transactions(full_text: str, lines: list, W: int, H: int) -> dict:
+    client_llm = get_openai_client()
+    layout_hint = {"image_size": {"width": W, "height": H}, "lines": lines}
+    allowed_categories = " | ".join(DEFAULT_CATEGORIES)
+
+    prompt = f"""
+너는 “가계부용 영수증 파서”다.
+입력은 (1) OCR 전체 텍스트(full_text)와 (2) OCR 라인별 bbox(layout_hint)다.
+이미지는 제공되지 않는다. 대신 bbox를 근거로 “위치(상단/중단/하단)”를 활용해 구조화하라.
+
+# 목표
+- 아래 DB 테이블 Transactions 컬럼에 바로 INSERT 가능한 형태로 1건(JSON 1개)만 출력한다.
+- 품목(item) 단위로 여러 줄을 만들지 말고, 영수증 1장 = 거래 1건으로 요약(description)에 압축한다.
+
+# DB Transactions 컬럼
+- user_id: 숫자(앱에서 채울 예정이므로 여기서는 null 고정)
+- category_name: 상위 카테고리명(아래 허용 목록 중 하나)
+- transaction_date: 거래일시(가능하면 YYYY-MM-DD HH:MM:SS)
+- merchant_name: 상호명
+- amount: 최종 결제 금액(정수)
+- description: 대표 품목/할인/결제수단 요약(한 줄)
+
+# 위치 기반 규칙 (매우 중요)
+- 상단(상호/사업자/주소/전화): merchant 후보가 많다. 가장 그럴듯한 상호명을 merchant_name으로 선택.
+- 중단(품목 영역): 품목명/수량/금액이 반복되는 영역. 여기서 대표 품목들을 description에 요약.
+- 하단(합계/총액/결제): 최종 결제금액(amount)과 거래일시(transaction_date)가 주로 나온다.
+- bbox 목록은 위에서 아래로 읽힌 순서대로 처리한다.
+
+# 금액 규칙 (매우 중요)
+- amount는 “사용자가 실제로 결제한 최종 금액(실결제/받은금액/결제금액/합계/총 결제금액/승인금액)”을 우선한다.
+- 할인/쿠폰/행사/즉시할인 등은 amount가 아니라 계산 근거일 수 있다. (amount는 최종 결제 기준)
+- 음수 금액(할인) 라인은 품목이 아니라 할인이다.
+- 최종 결제 금액 후보가 여러 개면, “하단”에 있고, 키워드(결제금액/총액/합계/받은금액/승인금액/결제대상금액)에 가장 가까운 값을 채택한다.
+- 통화단위(원) 표기나 콤마는 제거하고 정수로 만든다.
+
+# 날짜/시간 규칙
+- transaction_date는 가능하면 "YYYY-MM-DD HH:MM:SS"로 출력한다.
+- 초가 없으면 ":00"을 붙인다.
+- 날짜만 있으면 시간은 "00:00:00"으로 둔다.
+- 완전히 못 찾으면 null.
+
+# 카테고리 분류 규칙 — 반드시 준수
+- category_name은 다음 중 하나만: {allowed_categories}
+- "이마트", "홈플러스", "롯데마트", "코스트코", "GS더프레시", "노브랜드" 등 대형마트·식료품 중심 매장은 **반드시 "장보기"**
+- "쿠팡", "네이버쇼핑", "11번가", "G마켓", "옥션", "SSG", "무신사" 등 온라인 쇼핑몰은 **반드시 "쇼핑/취미"**
+- 카페/베이커리/편의점은 **"식비"**
+- 약국/병원/의원은 **"의료비"**
+- 위 규칙으로 판단 불가한 경우만 **"기타"**
+- merchant 기준 규칙이 품목 추정보다 우선이다.
+
+# description 작성 규칙 (DB 컬럼용)
+- 한 줄 문자열로 작성한다. 너무 길면 200자 이내로 요약한다.
+- 포함 우선순위:
+  1) 대표 품목 3~6개 (가능하면 "품목명 x수량" 또는 "품목명(금액)" 형태)
+  2) 할인/쿠폰이 있으면 "(할인 -1234)" 형태 1~2개
+  3) 결제수단이 보이면 "(카드/현금/간편결제)" 정도만
+- 품목을 전혀 못 읽으면 "{'{merchant_name}'} 영수증" 정도로라도 채운다.
+
+# 출력 스키마 (반드시 이 JSON 1개만 출력, 추가 설명 금지)
+{{
+  "user_id": null,
+  "category_name": "{allowed_categories} 중 하나 또는 null",
+  "transaction_date": "YYYY-MM-DD HH:MM:SS | null",
+  "merchant_name": "string | null",
+  "amount": "number | null",
+  "description": "string | null",
+  "confidence": "number (0~1)",
+  "notes": "string | null"
+}}
+
+[OCR 텍스트(full_text)]
+\"\"\"{full_text}\"\"\"
+
+[레이아웃 힌트(layout_hint)]
+{json.dumps(layout_hint, ensure_ascii=False)}
+""".strip()
+
+    resp = client_llm.responses.create(
+        model=MODEL,
+        max_output_tokens=1600,
+        input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
+    )
+
+    text_out = (resp.output_text or "").strip()
+    start = text_out.find("{")
+    end = text_out.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        raise ValueError(f"LLM output is not valid JSON:\n{text_out}")
+
+    return json.loads(text_out[start:end + 1])
+
+
+# =========================
+# UI
+# =========================
+st.title("🧾 영수증 입력")
+st.caption("영수증 이미지 업로드 → OCR → LLM 파싱(Transactions 1행) → DB(Transactions) 적재")
+
+img = st.file_uploader("영수증 이미지 업로드", type=["jpg", "png", "jpeg"], key="receipt_img")
+
+if img:
+    img_bytes = img.read()
+    st.image(img_bytes, width=350)
+
+    colA, colB = st.columns([1, 1])
+    with colA:
+        run_parse = st.button("🚀 OCR + 파싱 실행", type="primary", use_container_width=True)
+    with colB:
+        clear = st.button("🧹 파싱 결과 지우기", use_container_width=True)
+
+    if clear:
+        st.session_state["last_parsed"] = None
+        st.session_state["last_ocr_text"] = None
+        st.session_state["last_lines"] = None
+        st.session_state["last_img_size"] = None
+        st.success("초기화 완료")
+        st.rerun()
+
+    if run_parse:
+        with st.spinner("OCR + 레이아웃 추출 중..."):
+            full_text, lines, W, H = ocr_fulltext_and_lines_with_bbox_from_bytes(img_bytes)
+
+        st.session_state["last_ocr_text"] = full_text
+        st.session_state["last_lines"] = lines
+        st.session_state["last_img_size"] = (W, H)
+
+        with st.spinner("LLM 파싱 중...(Transactions 1행 형태)"):
+            parsed = parse_receipt_llm_to_transactions(full_text=full_text, lines=lines, W=W, H=H)
+
+        st.session_state["last_parsed"] = parsed
+        st.success("파싱 완료! 아래에서 DB에 적재할 수 있어요.")
+
+# =========================
+# 파싱 결과
+# =========================
+parsed = st.session_state.get("last_parsed")
+
+st.markdown("---")
+st.subheader("파싱 결과 (Transactions Insert 형태)")
+
+if parsed is None:
+    st.info("이미지를 업로드한 뒤 **OCR + 파싱 실행**을 눌러주세요.")
+else:
+    st.json(parsed)
+
+    with st.expander("OCR 텍스트 보기(디버그)", expanded=False):
+        st.text((st.session_state.get("last_ocr_text") or "")[:20000])
+
+    with st.expander("레이아웃 라인 보기(디버그)", expanded=False):
+        lines = st.session_state.get("last_lines") or []
+        size = st.session_state.get("last_img_size")
+        st.caption(f"lines={len(lines)}, image_size={size}")
+        st.json(lines[:50])
+
+    # -------------------------
+    # Parsed -> DB row
+    # -------------------------
+    cat = (parsed.get("category_name") or "기타").strip()
+    if cat not in DEFAULT_CATEGORIES:
+        cat = "기타"
+
+    date_time_db = to_db_datetime(parsed.get("transaction_date"))
+
+    amt = parsed.get("amount")
+    amt = float(amt) if amt is not None else 0.0
+
+    st.subheader("🗄️ DB(Transactions) 적재")
+
+    do_load_db = st.button("🗄️ DB(Transactions) 적재", use_container_width=True, type="primary")
+
+    if do_load_db:
+        engine = get_db_engine()
+        if engine is None:
+            st.error("DB 엔진이 None 입니다. (.env 또는 secrets.toml 설정을 확인하세요.)")
+            st.stop()
+
+        df_add_db = pd.DataFrame([{
+            "user_id": 1,  # 필요 시 로그인 사용자로 교체
+            "transaction_date": date_time_db,
+            "merchant_name": parsed.get("merchant_name"),
+            "description": parsed.get("description") or "(영수증)",
+            "category_name": cat,
+            "amount": int(amt) if amt == int(amt) else int(round(amt)),
+        }])
+
+        try:
+            df_add_db.to_sql("Transactions", con=engine, if_exists="append", index=False)
+            st.success("성공! DB(Transactions)에 1건 적재 완료")
+            st.rerun()
+        except Exception as e:
+            st.error(f"❌ DB 적재 오류: {e}")
+
+    st.markdown("---")
+    st.subheader("🧩 DB(Transactions)로 저장될 값 미리보기")
+    st.code(
+        json.dumps(
+            {
+                "user_id": 1,
+                "category_name": cat,
+                "transaction_date": date_time_db,
+                "merchant_name": parsed.get("merchant_name"),
+                "amount": int(amt) if amt == int(amt) else int(round(amt)),
+                "description": parsed.get("description"),
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        language="json",
+    )
