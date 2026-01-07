@@ -1,7 +1,6 @@
 from datetime import datetime
 import pandas as pd
 import streamlit as st
-<<<<<<< HEAD
 import matplotlib.pyplot as plt
 from sqlalchemy import text  # [추가] SQL 명령 실행을 위해 필요
 
@@ -113,8 +112,6 @@ else:
     st.info(f"📅 {month}월에 적재된 데이터가 없습니다.")
 
 
-
-=======
 import matplotlib.pyplot as plt  # (원본 코드에 있었던 import 유지)
 
 from sqlalchemy import text  # SQL 실행용(원본 코드에 있었던 import 유지)
@@ -419,4 +416,3 @@ for _, r in summary.iterrows():
             st.warning(f"주의 {budget - spent:,.0f}원 남음")
         else:
             st.success(f"잔액 {budget - spent:,.0f}원")
->>>>>>> origin/receipt-ocr
