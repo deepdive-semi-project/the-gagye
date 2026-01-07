@@ -1,13 +1,10 @@
-<<<<<<< HEAD
 # 추가 설치
 import os, io, json
 from datetime import datetime
 from typing import Optional, Tuple, List
-=======
 import os, io, json
 from datetime import datetime
 from typing import Optional, Tuple
->>>>>>> origin/receipt-ocr
 
 import pandas as pd
 import streamlit as st
@@ -15,7 +12,6 @@ from PIL import Image
 from google.cloud import vision
 from openai import OpenAI
 
-<<<<<<< HEAD
 current_dir = os.path.dirname(os.path.abspath(__file__)) 
 parent_dir = os.path.dirname(current_dir) 
 
@@ -26,11 +22,9 @@ os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = key_path
 from utils_state import init_state, get_db_engine
 init_state()
 #========================
-=======
 from utils_state import init_state, get_db_engine
 
 init_state()
->>>>>>> origin/receipt-ocr
 
 # -------------------------
 # Session vars
@@ -52,14 +46,11 @@ if "last_img_size" not in st.session_state:
 # =========================
 MODEL = os.getenv("OPENAI_MODEL", "gpt-4.1-mini")
 
-<<<<<<< HEAD
-
 # 카테고리 재분류 완료
 DEFAULT_CATEGORIES = [
     "식비", "장보기", "교통/차량", "쇼핑/취미", 
     "생활/주거", "교육", "의료비", "기타"
 ]
-=======
 CATEGORY_SCHEMA = {
     "식비": ["외식", "배달", "카페", "편의점", "간식"],
     "장보기": ["마트", "식재료", "생필품"],
@@ -71,7 +62,6 @@ CATEGORY_SCHEMA = {
     "기타": ["경조사", "분류 미정 항목"],
 }
 DEFAULT_CATEGORIES = list(CATEGORY_SCHEMA.keys())
->>>>>>> origin/receipt-ocr
 
 # =========================
 # Helpers
@@ -87,8 +77,6 @@ def normalize_month(dt_str: Optional[str]) -> str:
             pass
     return "Unknown"
 
-
-=======
 def to_db_datetime(dt_str: Optional[str]) -> Optional[str]:
     """LLM이 준 날짜를 DB용 'YYYY-MM-DD HH:MM:SS'로 정규화"""
     if not dt_str:
@@ -115,15 +103,10 @@ def to_db_datetime(dt_str: Optional[str]) -> Optional[str]:
     # 파싱 실패 시 원문 그대로 반환
     return s
 
-<<<<<<< HEAD
-=======
->>>>>>> origin/receipt-ocr
 def add_rows_to_spend_df(df_new: pd.DataFrame):
     if df_new is None or df_new.empty:
         return
 
-<<<<<<< HEAD
-=======
     #------------------------------------------
     # st.session_state.spend_df 에 이미 등록된 항목은 df_new 에서 제외
     df_new = check_duplicate(df_new)
@@ -133,7 +116,6 @@ def add_rows_to_spend_df(df_new: pd.DataFrame):
         return
     #------------------------------------------
     
->>>>>>> origin/receipt-ocr
     base = int(st.session_state.get("row_id_seq", 0))
     df_new = df_new.copy()
 
@@ -152,9 +134,6 @@ def add_rows_to_spend_df(df_new: pd.DataFrame):
         [st.session_state.spend_df, df_new[["row_id","date_time","merchant","item","category","amount"]]],
         ignore_index=True
     )
-<<<<<<< HEAD
-=======
->>>>>>> d0ffb146539874441c826f4c40dfaf2896a08572
 
 # 중복 체크를 위한 정규화 함수
 def norm_text(val):
@@ -184,7 +163,6 @@ def check_duplicate(df_new):
         )
         df_new = df_new[~mask]
     return df_new
->>>>>>> origin/receipt-ocr
 
 # =========================
 # Clients
@@ -193,23 +171,13 @@ def check_duplicate(df_new):
 def get_vision_client():
     return vision.ImageAnnotatorClient()
 
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/receipt-ocr
 @st.cache_resource
 def get_openai_client():
     # OPENAI_API_KEY 환경변수 필요
     return OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-<<<<<<< HEAD
-# =========================
-# OCR + Layout extraction (업그레이드 버전)
-=======
-
 # =========================
 # OCR + Layout extraction
->>>>>>> origin/receipt-ocr
 # =========================
 def _bbox_to_xyxy_norm(bounding_poly, W, H):
     xs = [v.x for v in bounding_poly.vertices]
@@ -218,10 +186,6 @@ def _bbox_to_xyxy_norm(bounding_poly, W, H):
     y0, y1 = max(0, min(ys)), min(H, max(ys))
     return {"x0": round(x0 / W, 6), "y0": round(y0 / H, 6), "x1": round(x1 / W, 6), "y1": round(y1 / H, 6)}
 
-<<<<<<< HEAD
-=======
-
->>>>>>> origin/receipt-ocr
 def _merge_boxes(boxes):
     x0 = min(b["x0"] for b in boxes)
     y0 = min(b["y0"] for b in boxes)
@@ -229,16 +193,13 @@ def _merge_boxes(boxes):
     y1 = max(b["y1"] for b in boxes)
     return {"x0": x0, "y0": y0, "x1": x1, "y1": y1}
 
-<<<<<<< HEAD
 def ocr_fulltext_and_lines_with_bbox_from_bytes(img_bytes: bytes) -> Tuple[str, list, int, int]:
     """
     Streamlit 업로드 bytes -> (full_text, lines, W, H)
     lines: [{"text": "...", "bbox": {"x0","y0","x1","y1"}} ...]
     """
-=======
 
 def ocr_fulltext_and_lines_with_bbox_from_bytes(img_bytes: bytes) -> Tuple[str, list, int, int]:
->>>>>>> origin/receipt-ocr
     client_vision = get_vision_client()
 
     image = vision.Image(content=img_bytes)
@@ -290,7 +251,6 @@ def ocr_fulltext_and_lines_with_bbox_from_bytes(img_bytes: bytes) -> Tuple[str, 
 
     return full_text, lines, W, H
 
-<<<<<<< HEAD
 # =========================
 # LLM (layout_hint 기반 업그레이드 버전)
 # =========================
@@ -300,7 +260,6 @@ def parse_receipt_llm_with_layout(full_text: str, lines: list, W: int, H: int) -
 
     # [추가] 카테고리 리스트
     CATEGORIES = "식비, 장보기, 교통/차량, 쇼핑/취미, 생활/주거, 교육, 의료비, 기타"
-=======
 
 # =========================
 # LLM (Transactions 1행 형태)
@@ -309,7 +268,6 @@ def parse_receipt_llm_to_transactions(full_text: str, lines: list, W: int, H: in
     client_llm = get_openai_client()
     layout_hint = {"image_size": {"width": W, "height": H}, "lines": lines}
     allowed_categories = " | ".join(DEFAULT_CATEGORIES)
->>>>>>> origin/receipt-ocr
 
     prompt = f"""
 너는 “가계부용 영수증 파서”다.
@@ -359,7 +317,6 @@ def parse_receipt_llm_to_transactions(full_text: str, lines: list, W: int, H: in
     "amount_paid": "number | null"
   }},
   "confidence": "number",
-=======
 이미지는 제공되지 않는다. 대신 bbox를 근거로 “위치(상단/중단/하단)”를 활용해 구조화하라.
 
 # 목표
@@ -432,11 +389,8 @@ def parse_receipt_llm_to_transactions(full_text: str, lines: list, W: int, H: in
 
     resp = client_llm.responses.create(
         model=MODEL,
-<<<<<<< HEAD
         max_output_tokens=2500,
-=======
         max_output_tokens=1600,
->>>>>>> origin/receipt-ocr
         input=[{"role": "user", "content": [{"type": "input_text", "text": prompt}]}],
     )
 
@@ -448,20 +402,17 @@ def parse_receipt_llm_to_transactions(full_text: str, lines: list, W: int, H: in
 
     return json.loads(text_out[start:end + 1])
 
-<<<<<<< HEAD
 # =========================
 # UI (수정 필요)
 # =========================
 st.title("🧾 영수증 입력")
 st.caption("종이 영수증 이미지를 업로드하면 자동으로 지출 데이터로 변환합니다.")
-=======
 
 # =========================
 # UI
 # =========================
 st.title("🧾 영수증 입력")
 st.caption("영수증 이미지 업로드 → OCR → LLM 파싱(Transactions 1행) → DB(Transactions) 적재")
->>>>>>> origin/receipt-ocr
 
 img = st.file_uploader("영수증 이미지 업로드", type=["jpg", "png", "jpeg"], key="receipt_img")
 
@@ -491,20 +442,17 @@ if img:
         st.session_state["last_lines"] = lines
         st.session_state["last_img_size"] = (W, H)
 
-<<<<<<< HEAD
         with st.spinner("LLM 파싱 중..."):
         
             parsed = parse_receipt_llm_with_layout(full_text=full_text, lines=lines, W=W, H=H)
 
         st.session_state["last_parsed"] = parsed
         st.success("파싱 완료! 아래에서 적재할 수 있어요.")
-=======
         with st.spinner("LLM 파싱 중...(Transactions 1행 형태)"):
             parsed = parse_receipt_llm_to_transactions(full_text=full_text, lines=lines, W=W, H=H)
 
         st.session_state["last_parsed"] = parsed
         st.success("파싱 완료! 아래에서 DB에 적재할 수 있어요.")
->>>>>>> origin/receipt-ocr
 
 # =========================
 # 파싱 결과
@@ -512,11 +460,8 @@ if img:
 parsed = st.session_state.get("last_parsed")
 
 st.markdown("---")
-<<<<<<< HEAD
 st.subheader("파싱 결과")
-=======
 st.subheader("파싱 결과 (Transactions Insert 형태)")
->>>>>>> origin/receipt-ocr
 
 if parsed is None:
     st.info("이미지를 업로드한 뒤 **OCR + 파싱 실행**을 눌러주세요.")
@@ -530,7 +475,6 @@ else:
         lines = st.session_state.get("last_lines") or []
         size = st.session_state.get("last_img_size")
         st.caption(f"lines={len(lines)}, image_size={size}")
-<<<<<<< HEAD
         st.json(lines[:50]) 
 
     # 적재 rows 만들기
@@ -588,7 +532,6 @@ else:
                 st.error(f"❌ DB 연동 오류: {e}")
         else:
             st.warning("적재할 데이터가 없습니다. 먼저 영수증을 파싱해 주세요.")
-=======
         st.json(lines[:50])
 
     # -------------------------
@@ -646,4 +589,4 @@ else:
         ),
         language="json",
     )
->>>>>>> origin/receipt-ocr
+
