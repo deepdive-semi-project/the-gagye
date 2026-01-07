@@ -1,22 +1,21 @@
 from datetime import datetime
 import pandas as pd
 import streamlit as st
-# 추가
 import os
 from dotenv import load_dotenv
 
 from utils_state import init_state
 init_state()
 
-# 경로 내용 추가
 current_dir = os.path.dirname(os.path.abspath(__file__))
 
-key_filename = "ocr-service-482801-c279b4cf4d9f.json" 
+# [수정] 특정 파일명을 직접 적지 않고 환경 변수에서 가져오도록 변경 (대신 환경 변수에 경로 설정 해야함)
+credential_path = os.getenv("GOOGLE_APPLICATION_CREDENTIALS") 
 
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.join(current_dir, key_filename)
-# ========
+if credential_path:
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = credential_path
 
-load_dotenv(dotenv_path=r"C:\project_ocr\.env", override=True)
+load_dotenv(override=True)
 
 st.set_page_config(page_title="THE 가계", layout="wide")
 
