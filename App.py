@@ -1,11 +1,20 @@
 from datetime import datetime
 import pandas as pd
 import streamlit as st
+# 추가
+import os
 from dotenv import load_dotenv
 
 from utils_state import init_state
 init_state()
 
+# 경로 내용 추가
+current_dir = os.path.dirname(os.path.abspath(__file__))
+
+key_filename = "ocr-service-482801-c279b4cf4d9f.json" 
+
+os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.join(current_dir, key_filename)
+# ========
 
 load_dotenv(dotenv_path=r"C:\project_ocr\.env", override=True)
 
