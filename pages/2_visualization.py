@@ -215,6 +215,38 @@ with st.sidebar:
     st.divider()
     st.header("예산 설정")
 
+    # 예산 설정시 카테고리명 조회
+    category_list = pd.read_sql("SELECT id, category_name FROM Category ORDER BY id", engine)
+    category_name_to_id = dict(zip(category_list["category_name"], category_list["id"]))
+
+    # 예산 설정 DB 저장
+    def save_budget(key):
+        arr_key = key.split("_")  # budget_{month}_{category} 형태
+        arr_month = arr_key[1].split("-")
+        category_nm = arr_key[2]
+
+        with engine.connect() as conn:
+            query = '''
+INSERT Budget (user_id, year, month, category_id, amount, description)
+VALUES (:user_id, :year, :month, :category_id, :amount, '')
+ON DUPLICATE KEY UPDATE amount = :amount '''
+        
+            params = {"user_id": USER_ID, 
+                        "year": int(arr_month[0]), 
+                        "month": int(arr_month[1]), 
+                        "category_id": int(category_name_to_id.get(category_nm, category_name_to_id.get("기타", 8))), 
+                        "amount": int(st.session_state[key])}
+            result = conn.execute(text(query), params)
+            # print("result", result.rowcount)
+            conn.commit()
+    
+    # 예산 설정 변경 이벤트            
+    def budget_changed(key):
+        try:
+            save_budget(key)
+        except Exception as e:
+            print("Error:", e)
+
     for c in DEFAULT_CATEGORIES:
         k = f"budget_{month}_{c}"
         if k not in st.session_state:
@@ -225,6 +257,8 @@ with st.sidebar:
             min_value=0,
             step=1000,
             key=k,
+            on_change=budget_changed,
+            args=[k]
         )
         st.session_state.budgets[month][c] = int(v)
 
