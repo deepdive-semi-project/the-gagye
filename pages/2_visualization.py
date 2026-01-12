@@ -78,49 +78,59 @@ def normalize_month(dt) -> str:
 
 
 # -----------------------
-# ✅ [핵심 변경] Transactions 테이블을 “항상” 화면 기준 데이터로 사용
+# ✅ [핵심 수정] Transactions + Category JOIN으로 category_name 가져오기
 # -----------------------
 engine = get_db_engine()
+
+def map_to_main_category(cat_raw: str) -> str:
+    """DB에서 가져온 카테고리(소분류/대분류 혼재)를 대분류로 정규화"""
+    if cat_raw is None:
+        return "기타"
+    cat_raw = str(cat_raw).strip()
+    if not cat_raw:
+        return "기타"
+
+    # 1) 이미 대분류라면 그대로
+    if cat_raw in CATEGORY_SCHEMA.keys():
+        return cat_raw
+
+    # 2) 소분류면 소속 대분류 찾기
+    for main, subs in CATEGORY_SCHEMA.items():
+        if cat_raw in subs:
+            return main
+
+    # 3) 어디에도 없으면 기타
+    return "기타"
+
 
 df_tx = pd.DataFrame(columns=["row_id", "date_time", "merchant", "item", "category", "amount"])
 
 if engine is None:
     st.warning("DB 엔진을 만들 수 없습니다. (.env / secrets 설정을 확인하세요) 현재는 로컬 session_state 데이터로만 동작합니다.")
-    # fallback (원하면 이 줄도 지우면 됨)
     df_tx = st.session_state.spend_df.copy()
+
 else:
     try:
-        # Transactions -> 화면 표준 컬럼명으로 매핑
-        df_db = pd.read_sql("SELECT * FROM Transactions", engine)
+        sql = """
+        SELECT
+            t.id AS row_id,
+            t.transaction_date AS date_time,
+            t.merchant_name AS merchant,
+            t.description AS item,
+            COALESCE(c.category_name, '기타') AS category_raw,
+            t.amount
+        FROM Transactions t
+        LEFT JOIN Category c
+            ON t.category_id = c.id
+        -- 필요하면 여기서 지출만 필터링 가능
+        -- WHERE t.type = 'E'
+        """
+        df_db = pd.read_sql(sql, engine)
 
-        df_db = df_db.rename(columns={
-            "transaction_date": "date_time",
-            "description": "item",
-            "merchant_name": "merchant",
-            "category_name": "category",
-        })
+        df_db["amount"] = pd.to_numeric(df_db["amount"], errors="coerce").fillna(0.0)
 
-        # row_id는 화면용(고유키로 id가 있으면 그걸 써도 됨)
-        if "row_id" not in df_db.columns:
-            if "id" in df_db.columns:
-                df_db = df_db.rename(columns={"id": "row_id"})
-            else:
-                df_db.insert(0, "row_id", range(1, len(df_db) + 1))
+        df_db["category"] = df_db["category_raw"].apply(map_to_main_category)
 
-        # amount 숫자 보정
-        if "amount" in df_db.columns:
-            df_db["amount"] = pd.to_numeric(df_db["amount"], errors="coerce").fillna(0.0)
-        else:
-            df_db["amount"] = 0.0
-
-        # category 보정
-        if "category" in df_db.columns:
-            df_db["category"] = df_db["category"].fillna("기타").astype(str).str.strip()
-            df_db.loc[~df_db["category"].isin(DEFAULT_CATEGORIES), "category"] = "기타"
-        else:
-            df_db["category"] = "기타"
-
-        # 필수 컬럼 확보
         for c in ["date_time", "merchant", "item"]:
             if c not in df_db.columns:
                 df_db[c] = None
@@ -129,7 +139,6 @@ else:
 
     except Exception as e:
         st.error(f"DB 데이터를 불러오는 중 오류 발생: {e}")
-        # fallback (원하면 이 줄도 지우면 됨)
         df_tx = st.session_state.spend_df.copy()
 
 # -----------------------
