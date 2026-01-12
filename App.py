@@ -4,20 +4,15 @@ import streamlit as st
 # 추가
 import os
 from dotenv import load_dotenv
-
-from utils_state import init_state
+from sqlalchemy import text # 추가
+from utils_state import init_state, get_db_engine #추가
 init_state()
 
-# 경로 내용 추가
-current_dir = os.path.dirname(os.path.abspath(__file__))
-
-key_filename = "ocr-service-482801-c279b4cf4d9f.json" 
-
-os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = os.path.join(current_dir, key_filename)
-# ========
-
-load_dotenv(dotenv_path=r"C:\project_ocr\.env", override=True)
-
+# 경로 수정====
+current_dir = os.path.dirname(os.path.abspath(__file__)) # 현재 파일이 있는 폴더 경로
+env_path = os.path.join(current_dir, ".env") # 현재 폴더의 .env 파일 지정
+load_dotenv(dotenv_path=env_path, override=True)
+# =====
 st.set_page_config(page_title="THE 가계", layout="wide")
 
 # ---- global session init (모든 페이지 공유) ----
@@ -62,3 +57,60 @@ with c2:
         "- 2_예산_지출_현황",
         icon="🧾"
     )
+
+# -----------------------
+# 예산 초과 알림 로직
+# -----------------------
+def show_budget_alert():
+    engine = get_db_engine()
+    if engine is None: return
+
+    now = datetime.now()
+    current_month = now.strftime("%Y-%m")
+    
+    user_budgets = st.session_state.get("budgets", {}).get(current_month, {})
+    total_budget = sum(user_budgets.values()) if user_budgets else 0
+
+    if total_budget <= 0:
+        return
+
+    try:
+        with engine.connect() as conn:
+            sd_str = now.strftime("%Y-%m-01 00:00:00")
+            
+            spend_sql = text("""
+                SELECT SUM(amount) FROM Transactions 
+                WHERE user_id = 1 
+                  AND (type = 'E' OR type IS NULL OR type = '') 
+                  AND transaction_date >= :sd
+            """)
+            
+            # 파라미터
+            total_spent = conn.execute(spend_sql, {"sd": sd_str}).scalar() or 0
+
+        # [디버그] 
+        st.write(f"🔍 [시스템 확인] 이번 달 지출: {total_spent:,.0f}원 / 설정 예산: {total_budget:,.0f}원")
+
+        if total_spent > total_budget:
+            over_amount = total_spent - total_budget
+            percent = (total_spent / total_budget) * 100
+            
+            # [추가]큰 제목 ====
+            st.divider() 
+            st.header("📢 월간 예산 초과 알림") 
+            # ==================
+
+            st.error(f"🚨 **{now.month}월 예산 초과 경고**")
+            c1, c2 = st.columns([2, 1])
+            with c1:
+                st.write(f"현재 총 지출: **{total_spent:,.0f}원**")
+                st.write(f"설정된 예산: **{total_budget:,.0f}원**")
+                st.progress(1.0)
+            with c2:
+                st.metric("소진율", f"{percent:.1f}%", f"{over_amount:,.0f}원 초과", delta_color="inverse")
+            st.divider()
+            
+    except Exception as e:
+        st.sidebar.error(f"알림 시스템 오류: {e}")
+
+show_budget_alert()

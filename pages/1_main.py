@@ -332,29 +332,38 @@ else:
     st.subheader("🗄️ DB(Transactions) 적재")
 
     do_load_db = st.button("🗄️ DB(Transactions) 적재", use_container_width=True, type="primary")
-
+###[매핑 로직 수정]
     if do_load_db:
         engine = get_db_engine()
-        if engine is None:
-            st.error("DB 엔진이 None 입니다. (.env 또는 secrets.toml 설정을 확인하세요.)")
-            st.stop()
-
-        df_add_db = pd.DataFrame([{
-            "user_id": 1,  # 필요 시 로그인 사용자로 교체
-            "transaction_date": date_time_db,
-            "merchant_name": parsed.get("merchant_name"),
-            "description": parsed.get("description") or "(영수증)",
-            "category_name": cat,
-            "amount": int(amt) if amt == int(amt) else int(round(amt)),
-        }])
-
+        
         try:
+            with engine.connect() as conn:
+                cat_df = pd.read_sql("SELECT id, category_name FROM Category", con=conn)
+                cat_map = dict(zip(cat_df['category_name'], cat_df['id']))
+
+            target_id = cat_map.get(cat)
+            
+            if target_id is None:
+                target_id = list(cat_map.values())[0] if cat_map else 1
+                st.warning(f"'{cat}' 카테고리를 DB에서 찾을 수 없어 기본값(ID:{target_id})으로 설정합니다.")
+
+            df_add_db = pd.DataFrame([{
+                "user_id": 1, 
+                "transaction_date": date_time_db,
+                "merchant_name": parsed.get("merchant_name"),
+                "description": parsed.get("description") or "(영수증)",
+                "amount": int(amt) if amt == int(amt) else int(round(amt)),
+                "category_id": int(target_id),
+                "type": "E", # 지출 추가 
+            }])
+
             df_add_db.to_sql("Transactions", con=engine, if_exists="append", index=False)
-            st.success("성공! DB(Transactions)에 1건 적재 완료")
+            st.success(f"✅ 성공! '{cat}'(ID: {target_id}) 카테고리로 DB 적재 완료")
             st.rerun()
+
         except Exception as e:
             st.error(f"❌ DB 적재 오류: {e}")
-
+#=====
     st.markdown("---")
     st.subheader("🧩 DB(Transactions)로 저장될 값 미리보기")
     st.code(
@@ -372,3 +381,5 @@ else:
         ),
         language="json",
     )
+
+
