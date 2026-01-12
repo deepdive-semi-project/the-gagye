@@ -8,8 +8,11 @@ from sqlalchemy import text # 추가
 from utils_state import init_state, get_db_engine #추가
 init_state()
 
-load_dotenv(dotenv_path=r"C:\project_ocr\.env", override=True)
-
+# 경로 수정====
+current_dir = os.path.dirname(os.path.abspath(__file__)) # 현재 파일이 있는 폴더 경로
+env_path = os.path.join(current_dir, ".env") # 현재 폴더의 .env 파일 지정
+load_dotenv(dotenv_path=env_path, override=True)
+# =====
 st.set_page_config(page_title="THE 가계", layout="wide")
 
 # ---- global session init (모든 페이지 공유) ----
