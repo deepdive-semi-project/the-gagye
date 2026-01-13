@@ -4,7 +4,7 @@ from utils_state import get_db_engine
 
 
 
-st.title("📂 DB 조회 (읽기 전용)")
+st.title("🗄️ DB 조회 (읽기 전용)")
 
 engine = get_db_engine()
 

@@ -73,6 +73,69 @@ def to_db_datetime(dt_str: Optional[str]) -> Optional[str]:
     # 파싱 실패 시 원문 그대로 반환
     return s
 
+# =====================
+# 중복 체크
+# =====================
+def add_rows_to_spend_df(df_new: pd.DataFrame):
+    if df_new is None or df_new.empty:
+        return
+
+    #------------------------------------------
+    # st.session_state.spend_df 에 이미 등록된 항목은 df_new 에서 제외
+    df_new = check_duplicate(df_new)
+
+    if df_new is None or df_new.empty:
+        st.toast(f"모든 항목이 중복되어 적재할 항목이 없습니다.", icon="⚠️")
+        return
+    #------------------------------------------
+    
+    base = int(st.session_state.get("row_id_seq", 0))
+    df_new = df_new.copy()
+
+    if "row_id" not in df_new.columns:
+        df_new.insert(0, "row_id", range(base + 1, base + 1 + len(df_new)))
+        st.session_state["row_id_seq"] = base + len(df_new)
+
+    for col in ["row_id", "date_time", "merchant", "item", "category", "amount"]:
+        if col not in df_new.columns:
+            df_new[col] = None
+
+    df_new["amount"] = pd.to_numeric(df_new["amount"], errors="coerce").fillna(0.0)
+    df_new["category"] = df_new["category"].fillna("기타")
+
+    st.session_state.spend_df = pd.concat(
+        [st.session_state.spend_df, df_new[["row_id","date_time","merchant","item","category","amount"]]],
+        ignore_index=True
+    )
+
+# 중복 체크를 위한 정규화 함수
+def norm_text(val):
+    if pd.isna(val):
+        return ""
+    
+    # 공백 제거
+    return " ".join(str(val).split()).strip()
+
+# 영수증 등록시 중복 체크
+def check_duplicate(df_new):
+    # merchant/item 비교 시 공백을 무시하도록 정규화
+    df_new["_merchant_norm"] = df_new["merchant"].apply(norm_text)
+    df_new["_item_norm"] = df_new["item"].apply(norm_text)
+
+    for idx, row in st.session_state.spend_df.iterrows():
+        row_dt = row.get("date_time")
+        row_amount = row.get("amount")
+        row_merchant_norm = norm_text(row.get("merchant"))
+        row_item_norm = norm_text(row.get("item"))
+
+        mask = (
+            (df_new["date_time"] == row_dt) &
+            (df_new["_merchant_norm"] == row_merchant_norm) &
+            (df_new["_item_norm"] == row_item_norm) &
+            (pd.to_numeric(df_new["amount"], errors="coerce").fillna(0.0) == float(row_amount or 0.0))
+        )
+        df_new = df_new[~mask]
+    return df_new
 
 # =========================
 # Clients
