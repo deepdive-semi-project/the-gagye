@@ -7,7 +7,7 @@ import streamlit as st
 from PIL import Image
 from google.cloud import vision
 from openai import OpenAI
-
+from sqlalchemy import text
 from utils_state import init_state, get_db_engine
 
 import streamlit as st
@@ -438,6 +438,32 @@ if do_load_db:
                 target_id = cat_map.get(cat)
                 if target_id is None:
                     target_id = list(cat_map.values())[0] if cat_map else 1
+
+                # -----------------------------
+                # 중복 체크
+                query = "SELECT COUNT(*) FROM Transactions "\
+                        "WHERE user_id = :user_id "\
+                        "AND transaction_date = :transaction_date "\
+                        "AND merchant_name = :merchant_name "\
+                        "AND description = :description "\
+                        "AND amount = :amount "\
+                        "AND category_id = :category_id "\
+                        "AND type = 'E';"
+
+                param = {"user_id": 1,
+                         "transaction_date": date_time_db,
+                         "merchant_name": parsed.get("merchant_name"),
+                         "description": parsed.get("description") or "(영수증)",
+                         "amount": int(amt) if amt == int(amt) else int(round(amt)),
+                         "category_id": int(target_id)}
+
+                result = conn.execute(text(query), param)
+                count = result.scalar()
+
+                if count > 0:
+                    st.warning("⚠️ 동일한 영수증이 이미 가계부에 등록되어 있습니다.")
+                    st.stop()
+                # -----------------------------
 
                 df_add_db = pd.DataFrame([{
                     "user_id": 1,
