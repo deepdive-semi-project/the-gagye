@@ -10,6 +10,13 @@ from openai import OpenAI
 
 from utils_state import init_state, get_db_engine
 
+import streamlit as st
+
+st.set_page_config(
+    page_title="영수증 입력",
+    page_icon="🧾",
+)
+
 init_state()
 
 # -------------------------
@@ -322,7 +329,6 @@ def parse_receipt_llm_to_transactions(full_text: str, lines: list, W: int, H: in
 # UI
 # =========================
 st.title("🧾 영수증 입력")
-st.caption("영수증 이미지 업로드 → OCR → LLM 파싱(Transactions 1행) → DB(Transactions) 적재")
 
 img = st.file_uploader("영수증 이미지 업로드", type=["jpg", "png", "jpeg"], key="receipt_img")
 
@@ -364,21 +370,28 @@ if img:
 parsed = st.session_state.get("last_parsed")
 
 st.markdown("---")
-st.subheader("파싱 결과 (Transactions Insert 형태)")
+st.subheader("영수증 인식 결과")
+
+
 
 if parsed is None:
     st.info("이미지를 업로드한 뒤 **OCR + 파싱 실행**을 눌러주세요.")
 else:
-    st.json(parsed)
+    # ✅ 일반 사용자용: 핵심만
+    st.success("✅ 영수증이 인식되었습니다. 아래 내용을 확인한 뒤 저장하세요.")
 
-    with st.expander("OCR 텍스트 보기(디버그)", expanded=False):
-        st.text((st.session_state.get("last_ocr_text") or "")[:20000])
 
-    with st.expander("레이아웃 라인 보기(디버그)", expanded=False):
-        lines = st.session_state.get("last_lines") or []
-        size = st.session_state.get("last_img_size")
-        st.caption(f"lines={len(lines)}, image_size={size}")
-        st.json(lines[:50])
+    # 일반 사용자에게 보여줄 핵심 요약(필요한 것만)
+    col1, col2 = st.columns(2)
+    with col1:
+        st.metric("상호", parsed.get("merchant_name") or "-")
+        st.metric("카테고리", (parsed.get("category_name") or "기타"))
+    with col2:
+        st.metric("금액", int(float(parsed.get("amount") or 0)))
+        st.metric("거래일시", to_db_datetime(parsed.get("transaction_date")) or "-")
+
+    st.caption(parsed.get("description") or "")
+
 
     # -------------------------
     # Parsed -> DB row
@@ -392,9 +405,15 @@ else:
     amt = parsed.get("amount")
     amt = float(amt) if amt is not None else 0.0
 
-    st.subheader("🗄️ DB(Transactions) 적재")
+    st.markdown("---")
+    st.subheader("💾 영수증 저장")
+    st.info(
+    "위에서 영수증 인식 결과를 확인하셨다면, "
+    "아래 버튼을 눌러 가계부에 저장해 주세요.\n\n"
+    "인식 결과에 오류가 있더라도 이후에 수정할 수 있습니다."
+    )
 
-    do_load_db = st.button("🗄️ DB(Transactions) 적재", use_container_width=True, type="primary")
+    do_load_db = st.button("💾 영수증을 가계부에 저장하기", use_container_width=True, type="primary")
 ###[매핑 로직 수정]
     if do_load_db:
         engine = get_db_engine()
@@ -426,8 +445,26 @@ else:
 
         except Exception as e:
             st.error(f"❌ DB 적재 오류: {e}")
-#=====
+
+st.markdown(
+    """
+    ---
+    #### 🧪 고급 정보 (선택 사항)
+    아래 내용은 **개발자·관리자·검증용** 정보입니다.  
+    일반적인 사용에는 **확인하지 않아도 무방**합니다.
+    """
+)
+
+# ✅ 전문(디버그) 정보는 접었다/펼치기
+with st.expander("🧪 고급 정보(파싱 JSON / OCR / bbox) 보기", expanded=False):
+
+    # 1️⃣ 파싱 결과 JSON
+    st.subheader("파싱 결과 JSON")
+    st.json(parsed)
+
     st.markdown("---")
+
+    # 2️⃣ DB(Transactions)로 저장될 값 미리보기
     st.subheader("🧩 DB(Transactions)로 저장될 값 미리보기")
     st.code(
         json.dumps(
@@ -444,5 +481,18 @@ else:
         ),
         language="json",
     )
+
+    st.markdown("---")
+
+    # 3️⃣ OCR 원문 텍스트
+    with st.expander("OCR 텍스트 보기(디버그)", expanded=False):
+        st.text((st.session_state.get("last_ocr_text") or "")[:20000])
+
+    # 4️⃣ 레이아웃 라인(bbox) 정보
+    with st.expander("레이아웃 라인 보기(디버그)", expanded=False):
+        lines = st.session_state.get("last_lines") or []
+        size = st.session_state.get("last_img_size")
+        st.caption(f"lines={len(lines)}, image_size={size}")
+        st.json(lines[:50])
 
 
