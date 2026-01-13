@@ -305,7 +305,7 @@ if not df.empty:
     df["category"] = df["category"].fillna("기타").astype(str).str.strip()
     df.loc[~df["category"].isin(DEFAULT_CATEGORIES), "category"] = "기타"
 
-st.subheader(f"지출 내역 ({month})  — Transactions 기준")
+st.subheader(f"지출 내역 ({month})")
 st.dataframe(df, width="stretch")
 
 # -----------------------
@@ -456,7 +456,7 @@ st.bar_chart(
 #   - Category(category_name) ↔ Transactions.category_id 매핑 포함
 # =========================================================
 st.markdown("---")
-st.subheader("🛠️ DB 지출 데이터 직접 관리 (추가/수정/삭제)")
+st.subheader("🛠️ 가계부 지출 데이터 직접 관리 (추가/수정/삭제)")
 
 if engine is None:
     st.warning("DB 엔진이 없어 CRUD 기능을 사용할 수 없습니다.")
@@ -700,19 +700,39 @@ with tab_edit:
 with tab_delete:
     st.caption("삭제는 되돌리기 어렵습니다. 신중히 진행하세요.")
 
+    with engine.begin() as conn:
+        crud_df = pd.read_sql(
+            text("""
+                SELECT
+                    t.id,
+                    t.user_id,
+                    t.transaction_date,
+                    t.merchant_name,
+                    t.description,
+                    c.category_name,
+                    t.amount
+                FROM Transactions t
+                LEFT JOIN Category c ON t.category_id = c.id
+                WHERE t.type = 'E'
+                ORDER BY t.id DESC
+            """),
+            conn
+        )
+
     del_view = crud_df[[
-        "id", "transaction_date", "merchant_name", "description", "category_name", "amount"
+        "id", "user_id", "transaction_date", "merchant_name", "description", "category_name", "amount"
     ]].copy()
     del_view.insert(0, "delete?", False)
 
     picked = st.data_editor(
         del_view,
-        key="tx_delete_picker",
+        key="tx_delete_picker_all",  
         use_container_width=True,
         num_rows="fixed",
         column_config={
             "delete?": st.column_config.CheckboxColumn("delete?"),
             "id": st.column_config.NumberColumn("id", disabled=True),
+            "user_id": st.column_config.NumberColumn("user_id", disabled=True),
             "transaction_date": st.column_config.DatetimeColumn("transaction_date", disabled=True),
             "amount": st.column_config.NumberColumn("amount", disabled=True),
             "category_name": st.column_config.TextColumn("category", disabled=True),
@@ -721,24 +741,29 @@ with tab_delete:
 
     ids_to_delete = picked.loc[picked["delete?"] == True, "id"].astype(int).tolist()
 
-    c1, c2 = st.columns([1, 1])
-    with c1:
-        if st.button(f"🗑️ 선택 {len(ids_to_delete)}건 삭제(DB)", use_container_width=True, disabled=(len(ids_to_delete) == 0)):
-            try:
-                delete_sql = text("""
-                    DELETE FROM Transactions
-                    WHERE id = :id
-                      AND user_id = :user_id
-                      AND type = 'E'
-                """)
-                with engine.begin() as conn:
-                    for rid in ids_to_delete:
-                        conn.execute(delete_sql, {"id": int(rid), "user_id": int(USER_ID)})
+    if st.button(f"🗑️ 선택 {len(ids_to_delete)}건 삭제(DB)",
+                 use_container_width=True,
+                 disabled=(len(ids_to_delete) == 0)):
+        try:
+            delete_sql = text("""
+                DELETE FROM Transactions
+                WHERE id = :id
+                  AND type = 'E'
+            """)
+            with engine.begin() as conn:
+                for rid in ids_to_delete:
+                    conn.execute(delete_sql, {"id": int(rid)})  
 
-                st.success("삭제 완료! (DB 반영)")
-                st.rerun()
-            except Exception as e:
-                st.error(f"삭제 실패: {e}")
+            st.success("삭제 완료! (DB 반영)")
+            st.cache_data.clear()  
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"삭제 실패: {e}")
+
+
+
+
 
 
 

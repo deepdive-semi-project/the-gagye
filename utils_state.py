@@ -78,3 +78,6 @@ def init_state():
 
     # 5) row_id_seq 갱신
     st.session_state["row_id_seq"] = len(st.session_state.spend_df)
+
+    if "pred_df_nm" not in st.session_state:
+        st.session_state["pred_df_nm"] = pd.DataFrame()

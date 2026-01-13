@@ -470,7 +470,7 @@ total_pred = float(pred_df["predicted"].sum())
 total_last = float(pred_df["last_month"].sum())
 
 c1, c2, c3 = st.columns(3)
-c1.metric("예측 대상 월", nm_label, f"{horizon}일")
+c1.metric("예측 대상 월", nm_label)
 c2.metric("다음달 총 지출 예측", f"{total_pred:,.0f}원", f"{(total_pred-total_last):,.0f}원")
 c3.metric("예측 카테고리 수", len(pred_df))
 
