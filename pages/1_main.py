@@ -393,58 +393,65 @@ else:
     st.caption(parsed.get("description") or "")
 
 
-    # -------------------------
-    # Parsed -> DB row
-    # -------------------------
-    cat = (parsed.get("category_name") or "기타").strip()
-    if cat not in DEFAULT_CATEGORIES:
-        cat = "기타"
+if st.session_state.get("save_success_msg"):
+    st.success(st.session_state["save_success_msg"])
+    st.session_state["save_success_msg"] = None
 
-    date_time_db = to_db_datetime(parsed.get("transaction_date"))
+# -------------------------
+# Parsed -> DB row
+# -------------------------
+cat = (parsed.get("category_name") or "기타").strip()
+if cat not in DEFAULT_CATEGORIES:
+    cat = "기타"
 
-    amt = parsed.get("amount")
-    amt = float(amt) if amt is not None else 0.0
+date_time_db = to_db_datetime(parsed.get("transaction_date"))
 
-    st.markdown("---")
-    st.subheader("💾 영수증 저장")
-    st.info(
+amt = parsed.get("amount")
+amt = float(amt) if amt is not None else 0.0
+
+st.markdown("---")
+st.subheader("💾 영수증 저장")
+st.info(
     "위에서 영수증 인식 결과를 확인하셨다면, "
     "아래 버튼을 눌러 가계부에 저장해 주세요.\n\n"
     "인식 결과에 오류가 있더라도 이후에 수정할 수 있습니다."
-    )
+)
 
-    do_load_db = st.button("💾 영수증을 가계부에 저장하기", use_container_width=True, type="primary")
-###[매핑 로직 수정]
-    if do_load_db:
-        engine = get_db_engine()
-        
-        try:
-            with engine.connect() as conn:
+do_load_db = st.button("💾 영수증을 가계부에 저장하기", use_container_width=True, type="primary")
+
+if do_load_db:
+    engine = get_db_engine()
+
+    try:
+        with st.spinner("저장 중..."):
+            with engine.begin() as conn:
                 cat_df = pd.read_sql("SELECT id, category_name FROM Category", con=conn)
-                cat_map = dict(zip(cat_df['category_name'], cat_df['id']))
+                cat_map = dict(zip(cat_df["category_name"], cat_df["id"]))
 
-            target_id = cat_map.get(cat)
-            
-            if target_id is None:
-                target_id = list(cat_map.values())[0] if cat_map else 1
-                st.warning(f"'{cat}' 카테고리를 DB에서 찾을 수 없어 기본값(ID:{target_id})으로 설정합니다.")
+                target_id = cat_map.get(cat)
+                if target_id is None:
+                    target_id = list(cat_map.values())[0] if cat_map else 1
 
-            df_add_db = pd.DataFrame([{
-                "user_id": 1, 
-                "transaction_date": date_time_db,
-                "merchant_name": parsed.get("merchant_name"),
-                "description": parsed.get("description") or "(영수증)",
-                "amount": int(amt) if amt == int(amt) else int(round(amt)),
-                "category_id": int(target_id),
-                "type": "E", # 지출 추가 
-            }])
+                df_add_db = pd.DataFrame([{
+                    "user_id": 1,
+                    "transaction_date": date_time_db,
+                    "merchant_name": parsed.get("merchant_name"),
+                    "description": parsed.get("description") or "(영수증)",
+                    "amount": int(amt) if amt == int(amt) else int(round(amt)),
+                    "category_id": int(target_id),
+                    "type": "E",
+                }])
 
-            df_add_db.to_sql("Transactions", con=engine, if_exists="append", index=False)
-            st.success(f"✅ 성공! '{cat}'(ID: {target_id}) 카테고리로 DB 적재 완료")
-            st.rerun()
+                df_add_db.to_sql("Transactions", con=conn, if_exists="append", index=False)
 
-        except Exception as e:
-            st.error(f"❌ DB 적재 오류: {e}")
+        st.session_state["save_success_msg"] = f"✅ 저장 완료! ({cat}, ID:{target_id})"
+        st.success(st.session_state["save_success_msg"])
+
+        st.rerun()
+
+    except Exception as e:
+        st.error(f"❌ DB 적재 오류: {e}")
+
 
 st.markdown(
     """
@@ -465,22 +472,31 @@ with st.expander("🧪 고급 정보(파싱 JSON / OCR / bbox) 보기", expanded
     st.markdown("---")
 
     # 2️⃣ DB(Transactions)로 저장될 값 미리보기
-    st.subheader("🧩 DB(Transactions)로 저장될 값 미리보기")
-    st.code(
-        json.dumps(
-            {
-                "user_id": 1,
-                "category_name": cat,
-                "transaction_date": date_time_db,
-                "merchant_name": parsed.get("merchant_name"),
-                "amount": int(amt) if amt == int(amt) else int(round(amt)),
-                "description": parsed.get("description"),
-            },
-            ensure_ascii=False,
-            indent=2,
-        ),
-        language="json",
-    )
+    parsed = st.session_state.get("last_parsed")
+
+    if parsed:
+        cat = (parsed.get("category_name") or "기타").strip()
+    else:
+        cat = None
+
+    if parsed:
+        st.subheader("🧩 DB에 저장될 값 미리보기")
+        st.code(
+            json.dumps(
+                {
+                    "user_id": 1,
+                    "category_name": cat,
+                    "transaction_date": date_time_db,
+                    "merchant_name": parsed.get("merchant_name"),
+                    "amount": int(amt),
+                    "description": parsed.get("description"),
+                },
+                ensure_ascii=False,
+                indent=2,
+            ),
+            language="json",
+        )
+
 
     st.markdown("---")
 

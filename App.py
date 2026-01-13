@@ -17,14 +17,32 @@ st.set_page_config(
     layout="wide",
 )
 
-pg = st.navigation([
+with st.sidebar:
+    show_db = st.checkbox("🗄️ DB 관리 표시", value=False)
+
+    st.caption(
+        "ℹ️ 영수증·지출 데이터가 어떻게 저장되어 있는지 확인하고 싶다면 "
+        "체크해서 열어보세요. (체크하면 상단에 페이지가 추가됩니다.)"
+    )
+    st.markdown("---")
+
+pages = [
     st.Page("pages/0_home.py", title="홈", icon="🏠"),
     st.Page("pages/1_main.py", title="영수증 입력", icon="🧾"),
     st.Page("pages/2_visualization.py", title="지출 현황", icon="📊"),
-    st.Page("pages/3_DB.py", title="DB 관리", icon="🗄️"),
     st.Page("pages/4_prediction.py", title="지출 예측", icon="🔮"),
-])
+]
+
+if show_db:
+    pages.append(
+        st.Page("pages/3_DB.py", title="DB 관리", icon="🗄️")
+    )
+
+pg = st.navigation(pages)
 pg.run()
+
+
+
 
 
 

@@ -13,8 +13,8 @@ from statsmodels.tsa.statespace.sarimax import SARIMAX
 from utils_state import init_state, get_db_engine
 
 
-current_dir = os.path.dirname(os.path.abspath(__file__)) # 현재 파일이 있는 폴더 경로
-env_path = os.path.join(current_dir, ".env") # 현재 폴더의 .env 파일 지정
+current_dir = os.path.dirname(os.path.abspath(__file__))  # 현재 파일이 있는 폴더 경로
+env_path = os.path.join(current_dir, ".env")              # 현재 폴더의 .env 파일 지정
 load_dotenv(dotenv_path=env_path, override=True)
 
 
@@ -109,21 +109,25 @@ def sarimax_forecast_next_month(series: pd.Series, nm_start: pd.Timestamp, horiz
     """
     일별 → 다음달(일별 경로) 예측 후, 월합으로 합산.
     실패하거나 데이터가 부족하면 None 반환 (caller에서 fallback 처리)
-
-    ※ SARIMAX는 statsmodels에서 ARIMA/SARIMA/ARIMAX를 모두 포함하는 통합 모델 엔진입니다.
     """
     s = series.copy().astype(float)
 
-    cap_q = float(params["cap_q"])
-    use_log = bool(params["use_log"])
-    drop_zero_days = bool(params["drop_zero_days"])
-    use_smoothing = bool(params["use_smoothing"])
-    min_active_days = int(params["min_active_days"])
-    min_train_len = int(params["min_train_len"])
-    use_weekly_season = bool(params["use_weekly_season"])
-    order_p, order_d, order_q = int(params["p"]), int(params["d"]), int(params["q"])
+    # ✅ params 안전 접근 + 기본값(추천값)으로 폴백
+    cap_q = float(params.get("cap_q", 0.98))
 
-    # 상한 캡(너무 강하면 월합 왜곡 가능 → 0.98 이상 권장)
+    use_log = bool(params.get("use_log", True))
+    drop_zero_days = bool(params.get("drop_zero_days", False))
+    use_smoothing = bool(params.get("use_smoothing", True))
+
+    min_active_days = int(params.get("min_active_days", 10))  # ✅ 디폴트 10으로
+    min_train_len = int(params.get("min_train_len", 30))
+    use_weekly_season = bool(params.get("use_weekly_season", True))
+
+    order_p = int(params.get("p", 1))
+    order_d = int(params.get("d", 1))
+    order_q = int(params.get("q", 1))
+
+    # 상한 캡
     cap = float(np.quantile(s.values, max(cap_q, 0.98))) if len(s) else 0.0
     if cap > 0:
         s = s.clip(upper=cap)
@@ -137,14 +141,14 @@ def sarimax_forecast_next_month(series: pd.Series, nm_start: pd.Timestamp, horiz
 
     y = s_train.sort_index()
 
-    # 월합 목적: 일별 노이즈 완화(추천)
+    # 노이즈 완화(추천)
     if use_smoothing:
         y = y.rolling(7, min_periods=1).mean()
 
     if use_log:
         y = np.log1p(y)
 
-    # 주간 계절성(안정형)
+    # 주간 계절성
     if use_weekly_season and len(y) >= 45:
         seasonal_order = (1, 1, 1, 7)
     else:
@@ -182,8 +186,8 @@ def sarimax_forecast_next_month(series: pd.Series, nm_start: pd.Timestamp, horiz
         lo = np.clip(lo, 0, None)
         hi = np.clip(hi, 0, None)
 
-        # 안전장치: 예측이 과하게 커지면 최근 분포 기준으로 캡
-        recent_cap = float(np.quantile(s.tail(90).values, 0.995)) if len(s) >= 30 else float(np.quantile(s.values, 0.995))
+        # 안전 캡
+        recent_cap = float(np.quantile(s.tail(90).values, 0.995)) if len(s) >= 15 else float(np.quantile(s.values, 0.995))
         if recent_cap > 0:
             yhat = np.clip(yhat, 0, recent_cap)
             lo = np.clip(lo, 0, recent_cap)
@@ -230,6 +234,7 @@ def build_forecast_next_month(pivot_df: pd.DataFrame, params: dict):
             "upper": hi,
             "last_month": last_month_sum,
             "active_days": int(active),
+            "method": method,
         })
 
     pred_df = pd.DataFrame(results)
@@ -245,173 +250,192 @@ def build_forecast_next_month(pivot_df: pd.DataFrame, params: dict):
     return pred_df, cache, meta
 
 
-# ==================================================
-# 1) 사이드바: "처음엔 접힌" 예측 방식 설정 패널
-# 2) 페이지 진입 시: 기본 파라미터로 자동 예측 1회 수행
-# 3) 사용자가 조정 후 버튼 누르면: 그 파라미터로 재예측
-# ==================================================
-
-DEFAULT_PARAMS = {
-    "min_active_days": 25,
-    "p": 1,
-    "d": 1,
-    "q": 1,
+# =========================
+# 추천(기본) 예측 설정
+# =========================
+DEFAULT_NM_PARAMS = {
+    "min_active_days": 10,
+    "min_train_len": 30,
     "use_weekly_season": True,
+    "use_smoothing": True,
     "use_log": True,
     "cap_q": 0.98,
     "drop_zero_days": False,
-    "use_smoothing": True,
-    "min_train_len": 30,
+    "p": 1,
+    "d": 1,
+    "q": 1,
 }
 
-if "nm_params" not in st.session_state:
-    st.session_state.nm_params = DEFAULT_PARAMS.copy()
+# nm_params 초기화/보정
+if "nm_params" not in st.session_state or not isinstance(st.session_state.nm_params, dict):
+    st.session_state.nm_params = DEFAULT_NM_PARAMS.copy()
+else:
+    for k, v in DEFAULT_NM_PARAMS.items():
+        st.session_state.nm_params.setdefault(k, v)
 
-if "pred_df_nm" not in st.session_state:
-    st.session_state.pred_df_nm = pd.DataFrame()
-if "pred_cache_nm" not in st.session_state:
-    st.session_state.pred_cache_nm = {}
-if "pred_meta_nm" not in st.session_state:
-    st.session_state.pred_meta_nm = {}
+# ✅ 위젯 상태도 "처음"에만 세팅 (위젯 생성 전에!)
+st.session_state.setdefault("ui_min_active_days", int(st.session_state.nm_params["min_active_days"]))
+st.session_state.setdefault("ui_min_train_len", int(st.session_state.nm_params["min_train_len"]))
+st.session_state.setdefault("ui_use_weekly_season", bool(st.session_state.nm_params["use_weekly_season"]))
+st.session_state.setdefault("ui_use_smoothing", bool(st.session_state.nm_params["use_smoothing"]))
+st.session_state.setdefault("ui_use_log", bool(st.session_state.nm_params["use_log"]))
 
-# 사이드바 UI (처음엔 접힘)
-st.sidebar.header("⚙️ 설정")
-st.sidebar.caption("기본값으로 예측이 먼저 표시됩니다. 필요하면 아래 패널을 펼쳐 조정하고 실행하세요.")
+# ✅ 리셋 콜백 (여기서 ui_* 를 바꿔도 안전)
+def reset_to_defaults():
+    st.session_state.nm_params.update(DEFAULT_NM_PARAMS)
+
+    st.session_state.ui_min_active_days = DEFAULT_NM_PARAMS["min_active_days"]
+    st.session_state.ui_min_train_len = DEFAULT_NM_PARAMS["min_train_len"]
+    st.session_state.ui_use_weekly_season = DEFAULT_NM_PARAMS["use_weekly_season"]
+    st.session_state.ui_use_smoothing = DEFAULT_NM_PARAMS["use_smoothing"]
+    st.session_state.ui_use_log = DEFAULT_NM_PARAMS["use_log"]
+
+    st.session_state["just_reset_defaults"] = True  # (선택) 메시지용 플래그
+
+
+# =========================
+# 사이드바 UI
+# =========================
+st.sidebar.header("⚙️ 예측 설정")
 
 categories_all = sorted(df["category"].unique().tolist())
-selected_categories = st.sidebar.multiselect("카테고리(예측 포함)", categories_all, default=categories_all)
 
-with st.sidebar.expander("🔧 예측 방식 설정 (고급)", expanded=False):
-    st.markdown("#### 데이터 포함 기준")
-    min_active_days = st.slider("최소 유효(지출>0) 일 수", 5, 365, st.session_state.nm_params["min_active_days"])
-    with st.expander("ℹ️ 의미", expanded=False):
-        st.markdown(
-            "- 이 카테고리는 **지출이 있었던 날이 최소 몇 번 이상** 있어야 예측할지 정하는 값이에요.\n"
-            "- 값을 **낮추면** 지출 기록이 적은 카테고리도 예측에 포함되지만, 결과가 **덜 믿을 수** 있어요.\n"
-            "- 값을 **높이면** 기록이 충분한 카테고리만 예측해서 결과가 **더 안정적**이에요.\n"
-            "- 참고: 기록이 너무 적으면, 이 앱은 SARIMAX 대신 **간단한 방식(Fallback)** 으로 예측값을 보여줄 수 있어요."
-        )
+selected_categories = st.sidebar.multiselect(
+    "예측에 포함할 카테고리",
+    categories_all,
+    default=categories_all,
+    help="선택한 카테고리만 다음 달 지출을 예측합니다.",
+    key="ui_selected_categories",
+)
 
-    min_train_len = st.slider("최소 학습 길이(일)", 7, 90, st.session_state.nm_params["min_train_len"])
-    with st.expander("ℹ️ 의미", expanded=False):
-        st.markdown(
-            "- 모델이 예측을 하기 전에, **최소 며칠치 데이터를 보고 배울지** 정하는 값이에요.\n"
-            "- 값이 너무 작으면 패턴을 제대로 못 배워서 예측이 **튀거나 불안정**해질 수 있어요.\n"
-            "- 보통은 **30일 이상**을 추천해요."
-        )
+with st.sidebar.expander("🔧 예측 방법 세부 설정 (선택)", expanded=False):
+    st.info(
+        "이 설정은 예측 방식을 직접 조정하고 싶은 분들을 위한 옵션입니다.\n\n"
+        "설정을 변경하지 않아도, 기본값으로 대부분의 경우에 적합한 예측이 진행됩니다."
+    )
 
-    st.markdown("#### SARIMAX 구조(p,d,q)")
-    p = st.selectbox("p (AR)", [0, 1, 2], index=[0, 1, 2].index(st.session_state.nm_params["p"]))
-    with st.expander("ℹ️ 의미", expanded=False):
-        st.markdown(
-            "- 예측할 때 **최근 며칠의 흐름(관성)**을 얼마나 참고할지 정하는 값이에요.\n"
-            "- 값이 커질수록 최근 패턴을 더 따라가지만, 너무 크면 **요즘 데이터에 과하게 끌려** 예측이 흔들릴 수 있어요.\n"
-            "- 잘 모르겠으면 **1**이 무난해요."
-        )
+    min_active_days = st.slider(
+        "지출 기록이 최소 몇 번 이상 있어야 예측할까요?",
+        1, 365,
+        value=st.session_state.ui_min_active_days,
+        key="ui_min_active_days",
+    )
 
-    d = st.selectbox("d (차분)", [0, 1], index=[0, 1].index(st.session_state.nm_params["d"]))
-    with st.expander("ℹ️ 의미", expanded=False):
-        st.markdown(
-            "- 지출이 시간이 지날수록 **전반적으로 늘거나(상승) 줄어드는(하락) 경향**이 있으면 예측이 어려울 수 있어요.\n"
-            "- d=1은 이런 ‘전체적인 기울기’를 한 번 정리해서 모델이 **더 안정적으로 학습**하도록 도와줘요.\n"
-            "- 보통은 **1**을 많이 사용해요."
-        )
+    min_train_len = st.slider(
+        "예측 전에 최소 며칠치 기록을 볼까요?",
+        7, 90,
+        value=st.session_state.ui_min_train_len,
+        key="ui_min_train_len",
+    )
 
-    q = st.selectbox("q (MA)", [0, 1, 2], index=[0, 1, 2].index(st.session_state.nm_params["q"]))
-    with st.expander("ℹ️ 의미", expanded=False):
-        st.markdown(
-            "- 예측할 때 **최근의 흔들림(오차/변동)**을 얼마나 반영할지 정하는 값이에요.\n"
-            "- 값이 커질수록 단기 변동을 더 따라가지만, 너무 크면 **예측이 불안정**해질 수 있어요.\n"
-            "- 잘 모르겠으면 **1**이 무난해요."
-        )
+    use_weekly_season = st.checkbox(
+        "요일별 소비 패턴 반영하기 (추천)",
+        value=st.session_state.ui_use_weekly_season,
+        key="ui_use_weekly_season",
+    )
 
-    st.markdown("#### 계절/전처리 옵션")
-    use_weekly_season = st.checkbox("주간(7일) 계절성 사용", value=st.session_state.nm_params["use_weekly_season"])
-    with st.expander("ℹ️ 의미", expanded=False):
-        st.markdown(
-            "- 월요일~일요일처럼 **요일에 따라 소비가 달라지는 패턴**이 있으면 켜는 것이 좋아요.\n"
-            "- 예: 주말에 외식/카페 지출이 늘어나는 경우\n"
-            "- 데이터가 아주 적으면 효과가 크지 않을 수 있어요."
-        )
+    use_smoothing = st.checkbox(
+        "소비 그래프를 부드럽게 만들기 (추천)",
+        value=st.session_state.ui_use_smoothing,
+        key="ui_use_smoothing",
+    )
 
-    use_smoothing = st.checkbox("7일 이동평균으로 노이즈 완화(추천)", value=st.session_state.nm_params["use_smoothing"])
-    with st.expander("ℹ️ 의미", expanded=False):
-        st.markdown(
-            "- 일별 지출은 원래 **들쭉날쭉**해서 예측이 튈 수 있어요.\n"
-            "- 이 옵션을 켜면, 최근 7일을 평균 내서 **그래프를 부드럽게** 만들고 예측을 더 안정적으로 해줘요.\n"
-            "- 다음달 ‘월 합계’ 예측이 목적이면 **켜두는 편이 보통 더 좋아요**."
-        )
+    use_log = st.checkbox(
+        "큰 지출로 인한 예측 흔들림 줄이기 (추천)",
+        value=st.session_state.ui_use_log,
+        key="ui_use_log",
+    )
 
-    use_log = st.checkbox("log 변환 사용(추천)", value=st.session_state.nm_params["use_log"])
-    with st.expander("ℹ️ 의미", expanded=False):
-        st.markdown(
-            "- 가끔 **한 번에 큰 지출**(예: 가전, 여행, 병원비)이 있으면 예측이 그쪽으로 크게 흔들릴 수 있어요.\n"
-            "- log 변환은 큰 값을 ‘완만하게’ 만들어서 **예측이 과하게 튀는 것을 줄여줘요**.\n"
-            "- 대부분의 가계부 데이터에서는 **켜두는 것이 안정적**이에요."
-        )
+    st.markdown("---")
 
-    cap_q = st.select_slider("이상치 상한 캡(quantile)", options=[0.90, 0.95, 0.98, 0.99], value=st.session_state.nm_params["cap_q"])
-    with st.expander("ℹ️ 의미", expanded=False):
-        st.markdown(
-            "- 아주 큰 지출이 한 번 있으면 예측이 ‘그 정도가 계속 나갈 것’처럼 커질 수 있어요.\n"
-            "- 이 옵션은 **상위 몇 %의 큰 지출을 적당히 제한**해서 예측이 망가지지 않게 해줘요.\n"
-            "- 값이 **0.99**면 거의 안 자르고, **0.90**이면 많이 자르는 편이에요.\n"
-            "- 월 합계 예측은 보통 **0.98~0.99**가 무난해요."
-        )
+    st.button(
+        "🔁 추천 설정으로 되돌리기",
+        use_container_width=True,
+        on_click=reset_to_defaults,
+    )
 
-    drop_zero_days = st.checkbox("0원 날은 학습에서 제외", value=st.session_state.nm_params["drop_zero_days"])
-    with st.expander("ℹ️ 의미", expanded=False):
-        st.markdown(
-            "- 지출이 없는 날(0원)이 많으면 평균이 낮아져서 예측이 작게 나올 수 있어요.\n"
-            "- 이 옵션을 켜면 **지출이 있었던 날만 보고** 패턴을 학습해요.\n"
-            "- 다만 ‘가끔만 쓰는 카테고리(간헐 지출)’는 0원이 중요한 정보라서,\n"
-            "  이 옵션을 켜면 오히려 예측이 **과하게 커질 수 있어요**. 잘 모르겠으면 **끄는 것을 추천**해요."
-        )
 
-st.sidebar.divider()
-rerun = st.sidebar.button("🚀 예측 방식 설정을 적용해 다시 예측")
+if st.session_state.get("just_reset_defaults"):
+    st.sidebar.success("추천 설정으로 되돌렸어요.")
+    st.session_state["just_reset_defaults"] = False
+
+
+# 적용 버튼
+apply_btn = st.sidebar.button("🚀 설정을 적용해 다시 예측", key="btn_apply")
+if apply_btn:
+    st.session_state.nm_params.update({
+        "min_active_days": int(st.session_state.ui_min_active_days),
+        "min_train_len": int(st.session_state.ui_min_train_len),
+        "use_weekly_season": bool(st.session_state.ui_use_weekly_season),
+        "use_smoothing": bool(st.session_state.ui_use_smoothing),
+        "use_log": bool(st.session_state.ui_use_log),
+    })
+
 
 current_params = st.session_state.nm_params.copy()
 
-if rerun:
-    st.session_state.nm_params = {
-        "min_active_days": int(min_active_days),
-        "p": int(p),
-        "d": int(d),
-        "q": int(q),
-        "use_weekly_season": bool(use_weekly_season),
-        "use_log": bool(use_log),
-        "cap_q": float(cap_q),
-        "drop_zero_days": bool(drop_zero_days),
-        "use_smoothing": bool(use_smoothing),
-        "min_train_len": int(min_train_len),
-    }
-    current_params = st.session_state.nm_params.copy()
+
+# ========================
+# 선택 카테고리 필터
+# ========================
+min_active_days_now = int(current_params.get("min_active_days", 10))
+
+# 선택된 카테고리 중, active_days(지출>0 일수)가 기준 이상인 것만 통과
+active_days_by_cat = (
+    df[df["category"].isin(selected_categories)]
+    .groupby("category")["daily_amount"]
+    .apply(lambda s: int((pd.to_numeric(s, errors="coerce").fillna(0) > 0).sum()))
+    .to_dict()
+)
+
+eligible_categories = [c for c in selected_categories if active_days_by_cat.get(c, 0) >= min_active_days_now]
+excluded_categories = [c for c in selected_categories if c not in eligible_categories]
+
+if excluded_categories:
+    st.sidebar.warning(
+        f"현재 '최소 지출 기록({min_active_days_now}일)' 기준을 충족하지 못해 제외된 카테고리: "
+        + ", ".join(excluded_categories)
+    )
+
+if not eligible_categories:
+    st.warning(f"선택된 카테고리 중 '최소 지출 기록({min_active_days_now}일)' 기준을 충족하는 항목이 없습니다.")
+    st.stop()
+
 
 # ==================================================
-# 페이지 진입 시 자동 예측 1회
+# pivot 생성 (eligible_categories만)
 # ==================================================
 pivot = (
-    df[df["category"].isin(selected_categories)]
+    df[df["category"].isin(eligible_categories)]
     .pivot_table(index="d", columns="category", values="daily_amount", aggfunc="sum")
     .fillna(0.0)
     .sort_index()
 )
+
+# 안전: pivot 자체가 비면 중단
+if pivot.empty or pivot.index.isna().all():
+    st.warning("예측에 사용할 데이터가 없습니다. (카테고리/데이터를 확인하세요)")
+    st.stop()
 
 full_idx = pd.date_range(pivot.index.min(), pivot.index.max(), freq="D")
 pivot = pivot.reindex(full_idx).fillna(0.0)
 pivot.index.name = "ds"
 
 cats_key = tuple(pivot.columns.tolist())
-if "cats_key_nm" not in st.session_state:
-    st.session_state.cats_key_nm = None
+
+# 필터키(최소지출기록/선택카테고리)도 캐시 무효화 조건에 넣기
+filter_key = (tuple(sorted(eligible_categories)), int(min_active_days_now), int(current_params.get("min_train_len", 30)),
+              bool(current_params.get("use_weekly_season", True)), bool(current_params.get("use_smoothing", True)),
+              bool(current_params.get("use_log", True)))
 
 need_auto_run = False
 if st.session_state.pred_df_nm.empty:
     need_auto_run = True
 elif st.session_state.cats_key_nm != cats_key:
     need_auto_run = True
-elif rerun:
+elif st.session_state.filter_key_nm != filter_key:
+    need_auto_run = True
+elif apply_btn:
     need_auto_run = True
 
 if need_auto_run:
@@ -421,14 +445,20 @@ if need_auto_run:
         st.session_state.pred_cache_nm = cache_nm
         st.session_state.pred_meta_nm = meta_nm
         st.session_state.cats_key_nm = cats_key
+        st.session_state.filter_key_nm = filter_key
 
 pred_df = st.session_state.pred_df_nm
 cache = st.session_state.pred_cache_nm
 meta = st.session_state.pred_meta_nm
 
+# ✅ 최종 안전: pred_df도 eligible_categories만 남기기 (혹시 모를 상태 꼬임 방지)
+if not pred_df.empty:
+    pred_df = pred_df[pred_df["category"].isin(eligible_categories)].reset_index(drop=True)
+
 if pred_df.empty:
-    st.warning("예측 결과가 없습니다. (데이터/카테고리 선택을 확인하세요)")
+    st.warning("예측 결과가 없습니다. (데이터/카테고리/기준 설정을 확인하세요)")
     st.stop()
+
 
 # ==================================================
 # 결과 표시
@@ -487,56 +517,50 @@ st.divider()
 # ==================================================
 st.subheader("💬 AI 피드백 (예측 결과 기반)")
 
-# --- 사용자에게 보여줄 입력 요약 만들기 ---
-def build_feedback_payload_from_pred(pred_df: pd.DataFrame, nm_label: str):
-    df_send = pred_df.copy()
 
-    # LLM이 헷갈리지 않게 정수로 정리(원 단위)
+def build_feedback_payload_from_pred(pred_df_in: pd.DataFrame, nm_label_in: str):
+    df_send = pred_df_in.copy()
     for col in ["predicted", "lower", "upper", "last_month"]:
         if col in df_send.columns:
             df_send[col] = df_send[col].fillna(0).round(0).astype(int)
 
-    total_pred = int(df_send["predicted"].sum()) if "predicted" in df_send.columns else 0
-    total_last = int(df_send["last_month"].sum()) if "last_month" in df_send.columns else 0
-    delta = total_pred - total_last
+    total_pred_in = int(df_send["predicted"].sum()) if "predicted" in df_send.columns else 0
+    total_last_in = int(df_send["last_month"].sum()) if "last_month" in df_send.columns else 0
+    delta_in = total_pred_in - total_last_in
 
     payload = {
-        "target_month": nm_label,
-        "total_pred": total_pred,
-        "total_last": total_last,
-        "delta": delta,
+        "target_month": nm_label_in,
+        "total_pred": total_pred_in,
+        "total_last": total_last_in,
+        "delta": delta_in,
         "currency": "KRW",
-        "rows": df_send[[
-            "category", "predicted", "lower", "upper", "last_month", "active_days"
-        ]].to_dict(orient="records")
+        "rows": df_send[["category", "predicted", "lower", "upper", "last_month", "active_days"]].to_dict(orient="records"),
     }
     return payload
 
 
-
-# --- 규칙 기반 fallback (API 실패/키 없음 대비) ---
-def rule_based_feedback(view_df: pd.DataFrame, nm_label: str) -> str:
-    df2 = view_df.copy()
+def rule_based_feedback(view_df_in: pd.DataFrame, nm_label_in: str) -> str:
+    df2 = view_df_in.copy()
     if "예측(원, 월합)" not in df2.columns or "전월(원, 월합)" not in df2.columns:
-        return f"{nm_label} 예측 결과가 준비됐어요. (전월 비교 컬럼이 없어 간단 요약만 제공해요.)"
+        return f"{nm_label_in} 예측 결과가 준비됐어요. (전월 비교 컬럼이 없어 간단 요약만 제공해요.)"
 
     df2["증감(원)"] = df2["예측(원, 월합)"] - df2["전월(원, 월합)"]
     denom = df2["전월(원, 월합)"].replace(0, np.nan)
     df2["증감(%)"] = (df2["증감(원)"] / denom * 100).round(1)
 
-    total_pred = float(df2["예측(원, 월합)"].sum())
-    total_last = float(df2["전월(원, 월합)"].sum())
-    delta = total_pred - total_last
-    delta_pct = (delta / total_last * 100) if total_last > 0 else np.nan
+    total_pred_in = float(df2["예측(원, 월합)"].sum())
+    total_last_in = float(df2["전월(원, 월합)"].sum())
+    delta_in = total_pred_in - total_last_in
+    delta_pct = (delta_in / total_last_in * 100) if total_last_in > 0 else np.nan
 
     top_up = df2.sort_values("증감(원)", ascending=False).head(3)
     top_down = df2.sort_values("증감(원)", ascending=True).head(3)
 
     lines = []
     if not np.isnan(delta_pct):
-        lines.append(f"- **{nm_label} 총 지출 예측**: {total_pred:,.0f}원 (전월 대비 {delta:,.0f}원, {delta_pct:.1f}%)")
+        lines.append(f"- **{nm_label_in} 총 지출 예측**: {total_pred_in:,.0f}원 (전월 대비 {delta_in:,.0f}원, {delta_pct:.1f}%)")
     else:
-        lines.append(f"- **{nm_label} 총 지출 예측**: {total_pred:,.0f}원 (전월 대비 {delta:,.0f}원)")
+        lines.append(f"- **{nm_label_in} 총 지출 예측**: {total_pred_in:,.0f}원 (전월 대비 {delta_in:,.0f}원)")
 
     lines.append("")
     lines.append("**증가가 큰 카테고리 TOP 3**")
@@ -557,7 +581,6 @@ def rule_based_feedback(view_df: pd.DataFrame, nm_label: str) -> str:
     return "\n".join(lines)
 
 
-# --- OpenAI 호출 ---
 def llm_feedback_openai(payload: dict) -> str:
     api_key = os.getenv("OPENAI_API_KEY", "").strip()
     if not api_key:
@@ -601,9 +624,8 @@ def llm_feedback_openai(payload: dict) -> str:
     return resp.choices[0].message.content
 
 
-
 # =========================
-#        AI 피드백 
+# AI 피드백
 # =========================
 payload = build_feedback_payload_from_pred(view_df, nm_label)
 
@@ -611,7 +633,8 @@ payload_key = (
     nm_label,
     tuple(view_df.get("카테고리", pd.Series([], dtype=str)).astype(str).tolist()),
     float(view_df.get("예측(원, 월합)", pd.Series([0.0])).sum()),
-    float(view_df.get("전월(원, 월합)", pd.Series([0.0])).sum()) if "전월(원, 월합)" in view_df.columns else 0.0
+    float(view_df.get("전월(원, 월합)", pd.Series([0.0])).sum()) if "전월(원, 월합)" in view_df.columns else 0.0,
+    int(min_active_days_now),
 )
 
 if "llm_feedback" not in st.session_state:
@@ -621,16 +644,11 @@ if "llm_feedback_key" not in st.session_state:
 
 cbtn1, cbtn2 = st.columns([1, 1])
 with cbtn1:
-    generate_feedback = st.button("📝 AI 피드백 생성", type="primary")
-    st.caption(
-    "AI가 예측 데이터를 기반으로 피드백을 제공합니다."
-    )
+    generate_feedback = st.button("📝 AI 피드백 생성", type="primary", key="btn_feedback")
+    st.caption("AI가 예측 데이터를 기반으로 피드백을 제공합니다.")
 with cbtn2:
-    regen = st.button("🔄 피드백 다시 생성")
-    st.caption(
-    "현재 화면의 예측 숫자는 그대로 두고, "
-    "AI가 설명과 조언만 새로 제공합니다."
-    )
+    regen = st.button("🔄 피드백 다시 생성", key="btn_feedback_regen")
+    st.caption("현재 화면의 예측 숫자는 그대로 두고, AI가 설명과 조언만 새로 제공합니다.")
 
 if generate_feedback or regen:
     with st.spinner("AI 피드백 생성 중..."):
