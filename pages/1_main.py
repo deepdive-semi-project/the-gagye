@@ -398,8 +398,12 @@ if st.session_state.get("save_success_msg"):
     st.session_state["save_success_msg"] = None
 
 # -------------------------
-# Parsed -> DB row
+# Parsed -> DB row (안전 처리)
 # -------------------------
+# ✅ parsed가 None/비dict이면 dict로 치환
+if not isinstance(parsed, dict):
+    parsed = {}
+
 cat = (parsed.get("category_name") or "기타").strip()
 if cat not in DEFAULT_CATEGORIES:
     cat = "기타"
@@ -408,6 +412,9 @@ date_time_db = to_db_datetime(parsed.get("transaction_date"))
 
 amt = parsed.get("amount")
 amt = float(amt) if amt is not None else 0.0
+
+# ✅ 실제 저장되는 amount 로직을 함수처럼 고정 (미리보기/저장 동일)
+amt_int = int(amt) if amt == int(amt) else int(round(amt))
 
 st.markdown("---")
 st.subheader("💾 영수증 저장")
@@ -437,7 +444,7 @@ if do_load_db:
                     "transaction_date": date_time_db,
                     "merchant_name": parsed.get("merchant_name"),
                     "description": parsed.get("description") or "(영수증)",
-                    "amount": int(amt) if amt == int(amt) else int(round(amt)),
+                    "amount": amt_int,
                     "category_id": int(target_id),
                     "type": "E",
                 }])
@@ -446,7 +453,6 @@ if do_load_db:
 
         st.session_state["save_success_msg"] = f"✅ 저장 완료! ({cat}, ID:{target_id})"
         st.success(st.session_state["save_success_msg"])
-
         st.rerun()
 
     except Exception as e:
@@ -462,7 +468,6 @@ st.markdown(
     """
 )
 
-# ✅ 전문(디버그) 정보는 접었다/펼치기
 with st.expander("🧪 고급 정보(파싱 JSON / OCR / bbox) 보기", expanded=False):
 
     # 1️⃣ 파싱 결과 JSON
@@ -472,30 +477,38 @@ with st.expander("🧪 고급 정보(파싱 JSON / OCR / bbox) 보기", expanded
     st.markdown("---")
 
     # 2️⃣ DB(Transactions)로 저장될 값 미리보기
-    parsed = st.session_state.get("last_parsed")
+    # ❌ parsed를 덮어쓰지 말고 별도 변수로!
+    parsed_dbg = st.session_state.get("last_parsed")
+    if not isinstance(parsed_dbg, dict):
+        parsed_dbg = {}
 
-    if parsed:
-        cat = (parsed.get("category_name") or "기타").strip()
-    else:
-        cat = None
+    cat_dbg = (parsed_dbg.get("category_name") or "기타").strip()
+    if cat_dbg not in DEFAULT_CATEGORIES:
+        cat_dbg = "기타"
 
-    if parsed:
-        st.subheader("🧩 DB에 저장될 값 미리보기")
-        st.code(
-            json.dumps(
-                {
-                    "user_id": 1,
-                    "category_name": cat,
-                    "transaction_date": date_time_db,
-                    "merchant_name": parsed.get("merchant_name"),
-                    "amount": int(amt),
-                    "description": parsed.get("description"),
-                },
-                ensure_ascii=False,
-                indent=2,
-            ),
-            language="json",
-        )
+    date_time_dbg = to_db_datetime(parsed_dbg.get("transaction_date"))
+
+    amt_dbg = parsed_dbg.get("amount")
+    amt_dbg = float(amt_dbg) if amt_dbg is not None else 0.0
+    amt_dbg_int = int(amt_dbg) if amt_dbg == int(amt_dbg) else int(round(amt_dbg))
+
+    st.subheader("🧩 DB에 저장될 값 미리보기")
+    st.code(
+        json.dumps(
+            {
+                "user_id": 1,
+                "category_name": cat_dbg,
+                "transaction_date": date_time_dbg,
+                "merchant_name": parsed_dbg.get("merchant_name"),
+                "amount": amt_dbg_int,
+                "description": parsed_dbg.get("description") or "(영수증)",
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        language="json",
+    )
+
 
 
     st.markdown("---")
