@@ -138,7 +138,7 @@ else:
         df_tx = df_db[["row_id", "date_time", "merchant", "item", "category", "amount"]].copy()
 
     except Exception as e:
-        st.error(f"DB 데이터를 불러오는 중 오류 발생: {e}")
+        st.error(f"가계부 데이터를 불러오는 중 오류 발생: {e}")
         df_tx = st.session_state.spend_df.copy()
 
 # -----------------------
@@ -374,8 +374,6 @@ if engine is None:
 # ✅ E(지출)만 + 필요하면 user_id까지 필터
 USER_ID = 2  
 
-USER_ID = 2
-
 query = """
 SELECT
     t.transaction_date,
@@ -387,7 +385,6 @@ FROM Transactions t
 LEFT JOIN Category c
     ON t.category_id = c.id
 WHERE t.type = 'E'
-  AND t.user_id = %(uid)s
 """
 df = pd.read_sql(query, engine, params={"uid": USER_ID})
 
@@ -487,7 +484,6 @@ SELECT
     t.type,
     t.category_id
 FROM Transactions t
-WHERE t.user_id = %(uid)s
 ORDER BY {order_sql}
 """
 
@@ -505,7 +501,7 @@ tab_add, tab_edit, tab_delete = st.tabs(["➕ 추가", "✏️ 수정", "🗑️
 # 1) 추가 (INSERT)
 # -----------------------------
 with tab_add:
-    st.caption("DB(Transactions)에 지출 1건을 직접 추가합니다. (type='E'로 저장)")
+    st.caption("가계부에 지출 1건을 직접 추가합니다.")
 
     with st.form("tx_add_form", clear_on_submit=False):
         c1, c2 = st.columns([1, 1])
@@ -522,7 +518,7 @@ with tab_add:
 
         desc = st.text_input("설명(description)", value="")
 
-        submitted = st.form_submit_button("✅ DB에 추가", use_container_width=True)
+        submitted = st.form_submit_button("✅ 가계부에 추가", use_container_width=True)
 
     if submitted:
         # date 파싱
@@ -548,7 +544,7 @@ with tab_add:
                         "amount": float(amount),
                         "description": desc
                     })
-                st.success("추가 완료! (DB에 저장됨)")
+                st.success("추가 완료! (가계부에 저장됨)")
                 st.rerun()
             except Exception as e:
                 st.error(f"추가 실패: {e}")
@@ -564,8 +560,8 @@ with tab_edit:
 
     # ✅ 화면 편집용 df (표시 컬럼 정리)
     edit_view = crud_df[[
-        "id", "transaction_date", "merchant_name", "description",
-        "category_name", "amount"
+    "id", "user_id", "transaction_date", "merchant_name", "description",
+    "category_name", "amount"
     ]].copy()
 
     # ✅ data_editor에서 TextColumn으로 편집하려면 dtype을 str로 바꿔야 함
@@ -581,44 +577,49 @@ with tab_edit:
     edit_view["amount"] = pd.to_numeric(edit_view["amount"], errors="coerce").fillna(0.0)
 
     edited = st.data_editor(
-        edit_view,
-        key="tx_editor",
-        use_container_width=True,
-        num_rows="fixed",
-        column_config={
-            "id": st.column_config.NumberColumn("id", disabled=True),
-            "transaction_date": st.column_config.TextColumn(
-                "transaction_date (YYYY-MM-DD HH:MM)",
-                help="예: 2026-01-05 09:30"
-            ),
-            "merchant_name": st.column_config.TextColumn("merchant_name"),
-            "description": st.column_config.TextColumn("description"),
-            "amount": st.column_config.NumberColumn("amount", step=100.0),
-            "category_name": st.column_config.SelectboxColumn("category", options=cat_names),
-        },
-    )
+    edit_view,
+    key="tx_editor",
+    use_container_width=True,
+    num_rows="fixed",
+    column_config={
+        "id": st.column_config.NumberColumn("id", disabled=True),
+        "user_id": st.column_config.NumberColumn("user_id", disabled=True),
+        "transaction_date": st.column_config.TextColumn(
+            "transaction_date (YYYY-MM-DD HH:MM)",
+            help="예: 2026-01-05 09:30"
+        ),
+        "merchant_name": st.column_config.TextColumn("merchant_name"),
+        "description": st.column_config.TextColumn("description"),
+        "amount": st.column_config.NumberColumn("amount", step=100.0),
+        "category_name": st.column_config.SelectboxColumn("category", options=cat_names),
+    },
+)
 
     c1, c2 = st.columns([1, 1])
 
     with c1:
-        if st.button("💾 수정 저장(DB 반영)", use_container_width=True):
+        a = st.session_state.get("tx_save_alert")
+        if a:
+            (st.success if a["level"]=="success" else st.warning)(a["msg"])
+            if st.button("알림 닫기", key="tx_save_alert_close"):
+                del st.session_state["tx_save_alert"]
+                st.rerun()
+
+        if st.button("💾 수정 저장(가계부 반영)", use_container_width=True):
             try:
                 before = edit_view.set_index("id")
                 after = edited.set_index("id")
+
+                def norm(x):
+                    return "" if pd.isna(x) else str(x).strip()
 
                 changed_ids = []
                 for rid in after.index:
                     if rid not in before.index:
                         continue
-
                     b = before.loc[rid]
                     a = after.loc[rid]
 
-                    # 문자열 비교(공백 정리)
-                    def norm(x):
-                        return "" if pd.isna(x) else str(x).strip()
-
-                    # 날짜는 문자열로 비교
                     if (
                         norm(b.get("transaction_date")) != norm(a.get("transaction_date")) or
                         norm(b.get("merchant_name")) != norm(a.get("merchant_name")) or
@@ -629,6 +630,7 @@ with tab_edit:
                         changed_ids.append(int(rid))
 
                 if not changed_ids:
+                    st.toast("변경된 내용이 없습니다.", icon="ℹ️")
                     st.info("변경된 내용이 없습니다.")
                 else:
                     update_sql = text("""
@@ -639,17 +641,19 @@ with tab_edit:
                             amount = :amount,
                             category_id = :category_id
                         WHERE id = :id
-                          AND user_id = :user_id
-                          AND type = 'E'
+                        AND user_id = :user_id
+                        AND type = 'E'
                     """)
 
                     bad_rows = []
+                    zero_updates = []
+                    success_count = 0  # ✅ 실제 DB 반영 건수
 
                     with engine.begin() as conn:
                         for rid in changed_ids:
                             row = after.loc[rid]
 
-                            # ✅ 날짜 문자열 검증
+                            # 날짜 검증
                             sdt = str(row.get("transaction_date", "")).strip()
                             if not DT_RE.match(sdt):
                                 bad_rows.append((rid, sdt))
@@ -660,12 +664,19 @@ with tab_edit:
                                 bad_rows.append((rid, sdt))
                                 continue
 
+                            # user_id 안전 변환
+                            uid_val = pd.to_numeric(row.get("user_id"), errors="coerce")
+                            if pd.isna(uid_val):
+                                zero_updates.append((rid, "user_id가 비어있음/변환불가"))
+                                continue
+                            uid_val = int(uid_val)
+
                             cat_name = str(row.get("category_name", "기타")).strip()
                             cat_id = int(cat_name_to_id.get(cat_name, cat_name_to_id.get("기타", 8)))
 
-                            conn.execute(update_sql, {
+                            res = conn.execute(update_sql, {
                                 "id": int(rid),
-                                "user_id": int(USER_ID),
+                                "user_id": uid_val,
                                 "transaction_date": dt_val.to_pydatetime(),
                                 "merchant_name": str(row.get("merchant_name", "")).strip(),
                                 "description": str(row.get("description", "")).strip(),
@@ -673,6 +684,12 @@ with tab_edit:
                                 "category_id": cat_id,
                             })
 
+                            if res.rowcount > 0:
+                                success_count += res.rowcount
+                            else:
+                                zero_updates.append((rid, f"업데이트 0건 (user_id={uid_val}, type='E' 조건 확인)"))
+
+                    # 상세 오류 표시
                     if bad_rows:
                         st.error("일부 행은 날짜 형식 오류로 저장되지 않았습니다. (YYYY-MM-DD HH:MM)")
                         st.dataframe(
@@ -680,18 +697,29 @@ with tab_edit:
                             use_container_width=True
                         )
 
-                    st.success(f"수정 완료! ({len(changed_ids) - len(bad_rows)}건 DB 반영)")
+                    if zero_updates:
+                        st.warning("일부 행은 조건 불일치로 가계부에 반영되지 않았습니다.")
+                        st.dataframe(
+                            pd.DataFrame(zero_updates, columns=["id", "사유"]),
+                            use_container_width=True
+                        )
+
+                    if success_count > 0:
+                        st.session_state["tx_save_alert"] = {
+                            "level": "success",
+                            "msg": f"✅ 수정 완료! ({success_count}건 가계부 반영)"
+                        }
+                    else:
+                        st.session_state["tx_save_alert"] = {
+                            "level": "warning",
+                            "msg": "⚠️ 가계부에 반영된 항목이 없습니다. (user_id/type/날짜 형식 확인)"
+                        }
+
+                    st.cache_data.clear()
                     st.rerun()
 
             except Exception as e:
                 st.error(f"수정 저장 실패: {e}")
-
-    with c2:
-        if st.button("↩️ 수정 취소(원복)", use_container_width=True):
-            if "tx_editor" in st.session_state:
-                del st.session_state["tx_editor"]
-            st.info("편집 내용을 원복했습니다.")
-            st.rerun()
 
 
 # -----------------------------
@@ -741,7 +769,7 @@ with tab_delete:
 
     ids_to_delete = picked.loc[picked["delete?"] == True, "id"].astype(int).tolist()
 
-    if st.button(f"🗑️ 선택 {len(ids_to_delete)}건 삭제(DB)",
+    if st.button(f"🗑️ 선택 {len(ids_to_delete)}건 삭제(가계부)",
                  use_container_width=True,
                  disabled=(len(ids_to_delete) == 0)):
         try:
@@ -754,7 +782,7 @@ with tab_delete:
                 for rid in ids_to_delete:
                     conn.execute(delete_sql, {"id": int(rid)})  
 
-            st.success("삭제 완료! (DB 반영)")
+            st.success("삭제 완료! (가계부 반영)")
             st.cache_data.clear()  
             st.rerun()
 

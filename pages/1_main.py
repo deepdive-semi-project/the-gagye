@@ -81,7 +81,6 @@ def to_db_datetime(dt_str: Optional[str]) -> Optional[str]:
 
     # 파싱 실패 시 원문 그대로 반환
     return s
-# 표준 서명 문자 정규화
 def normalize_signature(s: str) -> str:
     """중복 체크용 description 서명 정규화"""
     if s is None:
