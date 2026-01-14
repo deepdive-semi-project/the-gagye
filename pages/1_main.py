@@ -482,8 +482,7 @@ if do_load_db:
                 query = "SELECT COUNT(*) FROM Transactions "\
                         "WHERE user_id = :user_id "\
                         "AND transaction_date = :transaction_date "\
-                        "AND merchant_name = :merchant_name "\
-                        "AND description = :description "\
+                        "AND REPLACE(merchant_name, ' ','') = REPLACE(:merchant_name, ' ','') "\
                         "AND amount = :amount "\
                         "AND category_id = :category_id "\
                         "AND type = 'E';"
@@ -491,7 +490,6 @@ if do_load_db:
                 param = {"user_id": 1,
                          "transaction_date": date_time_db,
                          "merchant_name": parsed.get("merchant_name"),
-                         "description": parsed.get("description") or "(영수증)",
                          "amount": int(amt) if amt == int(amt) else int(round(amt)),
                          "category_id": int(target_id)}
 
