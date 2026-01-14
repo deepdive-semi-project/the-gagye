@@ -1,6 +1,8 @@
 import os, io, json
 from datetime import datetime
 from typing import Optional, Tuple
+import numpy as np
+import cv2
 
 import pandas as pd
 import streamlit as st
@@ -79,6 +81,36 @@ def to_db_datetime(dt_str: Optional[str]) -> Optional[str]:
 
     # 파싱 실패 시 원문 그대로 반환
     return s
+
+# ===========================================
+# 이미지 전처리 (노이즈 감소 + 대비 강화 + 샤프닝)
+# ===========================================
+def preprocess_receipt_bytes(img_bytes: bytes) -> bytes:
+    """
+    전처리: 노이즈 감소 + 대비 강화(CLAHE) + 샤프닝
+    반환: Google Vision에 넣을 JPEG bytes
+    """
+    img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+    arr = np.array(img)
+    bgr = cv2.cvtColor(arr, cv2.COLOR_RGB2BGR)
+    gray = cv2.cvtColor(bgr, cv2.COLOR_BGR2GRAY)
+
+    # 1) 노이즈 감소 (배경은 부드럽게, 글자 획 유지)
+    gray = cv2.bilateralFilter(gray, d=9, sigmaColor=75, sigmaSpace=75)
+
+    # 2) 대비 강화 (CLAHE)
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    gray = clahe.apply(gray)
+
+    # 3) 샤프닝
+    kernel = np.array([[0, -1, 0],
+                       [-1, 5, -1],
+                       [0, -1, 0]], dtype=np.float32)
+    gray = cv2.filter2D(gray, -1, kernel)
+
+    ok, buf = cv2.imencode(".jpg", gray, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    return buf.tobytes() if ok else img_bytes
+
 
 # =====================
 # 중복 체크
@@ -350,9 +382,14 @@ if img:
         st.success("초기화 완료")
         st.rerun()
 
+
+
     if run_parse:
+        # 전처리 적용 (노이즈 감소 + 대비 강화 + 샤프닝)
+        img_bytes_pp = preprocess_receipt_bytes(img_bytes)
+
         with st.spinner("OCR + 레이아웃 추출 중..."):
-            full_text, lines, W, H = ocr_fulltext_and_lines_with_bbox_from_bytes(img_bytes)
+            full_text, lines, W, H = ocr_fulltext_and_lines_with_bbox_from_bytes(img_bytes_pp)
 
         st.session_state["last_ocr_text"] = full_text
         st.session_state["last_lines"] = lines
@@ -363,6 +400,7 @@ if img:
 
         st.session_state["last_parsed"] = parsed
         st.success("파싱 완료! 아래에서 DB에 적재할 수 있어요.")
+
 
 # =========================
 # 파싱 결과

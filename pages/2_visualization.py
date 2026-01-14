@@ -507,7 +507,7 @@ tab_add, tab_edit, tab_delete = st.tabs(["➕ 추가", "✏️ 수정", "🗑️
 with tab_add:
     st.caption("DB(Transactions)에 지출 1건을 직접 추가합니다. (type='E'로 저장)")
 
-    with st.form("tx_add_form", clear_on_submit=True):
+    with st.form("tx_add_form", clear_on_submit=False):
         c1, c2 = st.columns([1, 1])
         with c1:
             dt = st.text_input("일시 (예: 2026-01-05 09:30)", value=datetime.now().strftime("%Y-%m-%d %H:%M"))
