@@ -370,9 +370,9 @@ if img:
 
     colA, colB = st.columns([1, 1])
     with colA:
-        run_parse = st.button("🚀 OCR + 파싱 실행", type="primary", use_container_width=True)
+        run_parse = st.button("🔍 영수증 인식하기", type="primary", use_container_width=True)
     with colB:
-        clear = st.button("🧹 파싱 결과 지우기", use_container_width=True)
+        clear = st.button("🧹 인식 결과 지우기", use_container_width=True)
 
     if clear:
         st.session_state["last_parsed"] = None
@@ -399,7 +399,7 @@ if img:
             parsed = parse_receipt_llm_to_transactions(full_text=full_text, lines=lines, W=W, H=H)
 
         st.session_state["last_parsed"] = parsed
-        st.success("파싱 완료! 아래에서 DB에 적재할 수 있어요.")
+        st.success("영수증 인식 완료! 이제 영수증을 가계부에 저장할 수 있어요!")
 
 
 # =========================

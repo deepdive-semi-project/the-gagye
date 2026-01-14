@@ -68,14 +68,42 @@ if df.empty:
 
 
 # ==================================================
+# 예측 대상 월 선택 (예: 2026-01)
+# - 선택한 월의 1일을 기준으로, 그 전날까지의 데이터만 학습에 사용
+# ==================================================
+max_d = df["d"].max().normalize()
+default_target_month = (max_d + pd.offsets.MonthBegin(1)).strftime("%Y-%m")  # 기본: 다음달
+
+target_month = st.sidebar.text_input(
+    "예측할 월 (YYYY-MM)",
+    value=default_target_month,
+    help="예: 2026-01 을 입력하면, 2025-12-31 까지 데이터로 2026-01을 예측합니다."
+)
+
+try:
+    target_start = pd.to_datetime(f"{target_month}-01").normalize()
+except Exception:
+    st.sidebar.error("예측할 월 형식이 올바르지 않습니다. 예: 2026-01")
+    st.stop()
+
+target_end = (target_start + pd.offsets.MonthEnd(0)).normalize()
+horizon = int((target_end - target_start).days + 1)
+
+# 학습 데이터는 target_start 전날까지만
+train_end = (target_start - pd.Timedelta(days=1)).normalize()
+
+if train_end < df["d"].min().normalize():
+    st.sidebar.warning("선택한 예측월이 너무 과거라 학습 데이터가 부족합니다.")
+
+
+# ==================================================
 # 유틸: 다음달 기간 계산
 # ==================================================
-def next_month_range(last_date: pd.Timestamp):
-    last_date = pd.to_datetime(last_date).normalize()
-    next_month_start = (last_date + pd.offsets.MonthBegin(1)).normalize()
-    next_month_end = (next_month_start + pd.offsets.MonthEnd(0)).normalize()
-    horizon = (next_month_end - next_month_start).days + 1
-    return next_month_start, next_month_end, int(horizon)
+def target_month_range(target_start: pd.Timestamp):
+    target_start = pd.to_datetime(target_start).normalize()
+    target_end = (target_start + pd.offsets.MonthEnd(0)).normalize()
+    horizon = (target_end - target_start).days + 1
+    return target_start, target_end, int(horizon)
 
 
 # ==================================================
@@ -205,12 +233,11 @@ def sarimax_forecast_next_month(series: pd.Series, nm_start: pd.Timestamp, horiz
         return None, None, active_days, f"sarimax_error:{type(e).__name__}"
 
 
-def build_forecast_next_month(pivot_df: pd.DataFrame, params: dict):
+def build_forecast_for_target_month(pivot_df: pd.DataFrame, params: dict, target_start: pd.Timestamp):
     results = []
     cache = {}
 
-    last_day = pivot_df.index.max()
-    nm_start, nm_end, horizon = next_month_range(last_day)
+    nm_start, nm_end, horizon = target_month_range(target_start)
 
     for cat in pivot_df.columns:
         s = pivot_df[cat].rename(cat)
@@ -224,7 +251,9 @@ def build_forecast_next_month(pivot_df: pd.DataFrame, params: dict):
         total, lo, hi = totals
         cache[cat] = (s, fcst)
 
-        last_month_sum = float(s.loc[s.index.to_period("M") == last_day.to_period("M")].sum())
+        # "전월"은 예측 월의 직전 월 합계로 계산
+        prev_month = (nm_start - pd.offsets.MonthBegin(1)).to_period("M")
+        last_month_sum = float(s.loc[s.index.to_period("M") == prev_month].sum())
 
         results.append({
             "category": cat,
@@ -242,12 +271,13 @@ def build_forecast_next_month(pivot_df: pd.DataFrame, params: dict):
         pred_df = pred_df.sort_values("predicted", ascending=False).reset_index(drop=True)
 
     meta = {
-        "last_day": last_day,
-        "next_month_start": nm_start,
-        "next_month_end": nm_end,
+        "train_end": train_end,
+        "target_month_start": nm_start,
+        "target_month_end": nm_end,
         "horizon_days": horizon,
     }
     return pred_df, cache, meta
+
 
 
 # =========================
@@ -403,23 +433,28 @@ if not eligible_categories:
 
 
 # ==================================================
-# pivot 생성 (eligible_categories만)
+# pivot 생성 (eligible_categories만) + ✅ 학습데이터는 train_end까지만
 # ==================================================
+df_train = df[
+    (df["category"].isin(eligible_categories)) &
+    (df["d"] <= train_end)
+].copy()
+
 pivot = (
-    df[df["category"].isin(eligible_categories)]
+    df_train
     .pivot_table(index="d", columns="category", values="daily_amount", aggfunc="sum")
     .fillna(0.0)
     .sort_index()
 )
 
-# 안전: pivot 자체가 비면 중단
 if pivot.empty or pivot.index.isna().all():
-    st.warning("예측에 사용할 데이터가 없습니다. (카테고리/데이터를 확인하세요)")
+    st.warning("예측에 사용할 학습 데이터가 없습니다. (선택 월/데이터 기간을 확인하세요)")
     st.stop()
 
 full_idx = pd.date_range(pivot.index.min(), pivot.index.max(), freq="D")
 pivot = pivot.reindex(full_idx).fillna(0.0)
 pivot.index.name = "ds"
+
 
 cats_key = tuple(pivot.columns.tolist())
 
@@ -439,13 +474,14 @@ elif apply_btn:
     need_auto_run = True
 
 if need_auto_run:
-    with st.spinner("다음달 예측 계산 중..."):
-        pred_df_nm, cache_nm, meta_nm = build_forecast_next_month(pivot, current_params)
+    with st.spinner("예측 계산 중..."):
+        pred_df_nm, cache_nm, meta_nm = build_forecast_for_target_month(pivot, current_params, target_start)
         st.session_state.pred_df_nm = pred_df_nm
         st.session_state.pred_cache_nm = cache_nm
         st.session_state.pred_meta_nm = meta_nm
         st.session_state.cats_key_nm = cats_key
         st.session_state.filter_key_nm = filter_key
+
 
 pred_df = st.session_state.pred_df_nm
 cache = st.session_state.pred_cache_nm
@@ -463,8 +499,9 @@ if pred_df.empty:
 # ==================================================
 # 결과 표시
 # ==================================================
-nm_label = meta["next_month_start"].strftime("%Y-%m")
-horizon = meta["horizon_days"]
+nm_start = meta.get("target_month_start") or meta.get("next_month_start")
+nm_label = nm_start.strftime("%Y-%m")
+
 
 total_pred = float(pred_df["predicted"].sum())
 total_last = float(pred_df["last_month"].sum())
