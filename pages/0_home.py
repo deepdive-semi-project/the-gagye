@@ -2,7 +2,7 @@ import streamlit as st
 from datetime import datetime
 import pandas as pd
 from sqlalchemy import text # 추가
-
+import streamlit.components.v1 as components
 from utils_state import init_state, get_db_engine #추가
 init_state()
 
@@ -79,9 +79,12 @@ def show_budget_alert():
                 st.progress(1.0)
             with c2:
                 st.metric("소진율", f"{percent:.1f}%", f"{over_amount:,.0f}원 초과", delta_color="inverse")
-            st.divider()
             
     except Exception as e:
         st.sidebar.error(f"알림 시스템 오류: {e}")
 
 show_budget_alert()
+
+st.divider()
+st.markdown("### 📅 월간 수입/지출 내역")
+components.iframe("http://3.35.196.37:8000/home/", height=900)
