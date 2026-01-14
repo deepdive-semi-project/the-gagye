@@ -81,6 +81,16 @@ def to_db_datetime(dt_str: Optional[str]) -> Optional[str]:
 
     # 파싱 실패 시 원문 그대로 반환
     return s
+# 표준 서명 문자 정규화
+def normalize_signature(s: str) -> str:
+    """중복 체크용 description 서명 정규화"""
+    if s is None:
+        return ""
+    s = str(s)
+    s = s.replace("\r", " ").replace("\n", " ").replace("\t", " ")
+    s = " ".join(s.split()).strip()
+    return s
+
 
 # ===========================================
 # 이미지 전처리 (노이즈 감소 + 대비 강화 + 샤프닝)
@@ -157,24 +167,26 @@ def norm_text(val):
 
 # 영수증 등록시 중복 체크
 def check_duplicate(df_new):
-    # merchant/item 비교 시 공백을 무시하도록 정규화
-    df_new["_merchant_norm"] = df_new["merchant"].apply(norm_text)
-    df_new["_item_norm"] = df_new["item"].apply(norm_text)
+    df_new = df_new.copy()
 
-    for idx, row in st.session_state.spend_df.iterrows():
+    # merchant 비교용 정규화만 유지
+    df_new["_merchant_norm"] = df_new["merchant"].apply(norm_text)
+
+    for _, row in st.session_state.spend_df.iterrows():
         row_dt = row.get("date_time")
-        row_amount = row.get("amount")
+        row_amount = float(row.get("amount") or 0.0)
         row_merchant_norm = norm_text(row.get("merchant"))
-        row_item_norm = norm_text(row.get("item"))
 
         mask = (
             (df_new["date_time"] == row_dt) &
             (df_new["_merchant_norm"] == row_merchant_norm) &
-            (df_new["_item_norm"] == row_item_norm) &
-            (pd.to_numeric(df_new["amount"], errors="coerce").fillna(0.0) == float(row_amount or 0.0))
+            (pd.to_numeric(df_new["amount"], errors="coerce").fillna(0.0) == row_amount)
         )
-        df_new = df_new[~mask]
-    return df_new
+
+        df_new = df_new.loc[~mask]
+
+    return df_new.drop(columns=["_merchant_norm"], errors="ignore")
+
 
 # =========================
 # Clients
@@ -315,13 +327,16 @@ def parse_receipt_llm_to_transactions(full_text: str, lines: list, W: int, H: in
 - 위 규칙으로 판단 불가한 경우만 **"기타"**
 - merchant 기준 규칙이 품목 추정보다 우선이다.
 
-# description 작성 규칙 (DB 컬럼용)
-- 한 줄 문자열로 작성한다. 너무 길면 200자 이내로 요약한다.
-- 포함 우선순위:
-  1) 대표 품목 3~6개 (가능하면 "품목명 x수량" 또는 "품목명(금액)" 형태)
-  2) 할인/쿠폰이 있으면 "(할인 -1234)" 형태 1~2개
-  3) 결제수단이 보이면 "(카드/현금/간편결제)" 정도만
-- 품목을 전혀 못 읽으면 "{'{merchant_name}'} 영수증" 정도로라도 채운다.
+# description은 "중복검사용 표준 서명"으로 작성한다 (매우 중요)
+- 절대 자연어 문장으로 쓰지 말고, 아래 포맷을 강제한다.
+- 토큰 구분자는 반드시 " " 만 사용한다.
+- 품목은 OCR lines를 기준으로 위→아래 순서로 최대 6개만 뽑는다.
+- 품목 표기는 반드시 "{{name}} {{amount}}x{{qty}}" 로 고정한다. (qty 없으면 x1)
+- 할인/쿠폰은 반드시 "DISCOUNT {{abs_amount}}" 로 표기한다.
+- 결제수단은 반드시 "PAY=card|PAY=cash|PAY=easy" 중 하나로 표기(모르면 PAY=unknown)
+- 마지막에 반드시 "TOTAL={{amount}}" 와 "DT={{transaction_date}}" 를 포함한다.
+- 공백, 괄호, 쉼표, "원" 같은 단위는 절대 넣지 않는다.
+
 
 # 출력 스키마 (반드시 이 JSON 1개만 출력, 추가 설명 금지)
 {{
@@ -478,20 +493,24 @@ if do_load_db:
                     target_id = list(cat_map.values())[0] if cat_map else 1
 
                 # -----------------------------
-                # 중복 체크
-                query = "SELECT COUNT(*) FROM Transactions "\
-                        "WHERE user_id = :user_id "\
-                        "AND transaction_date = :transaction_date "\
-                        "AND REPLACE(merchant_name, ' ','') = REPLACE(:merchant_name, ' ','') "\
-                        "AND amount = :amount "\
-                        "AND category_id = :category_id "\
-                        "AND type = 'E';"
+                # 중복 체크 +(표준 문자 서명)
+                # -----------------------------
+                query = """
+                SELECT COUNT(*) FROM Transactions
+                WHERE user_id = :user_id
+                AND type = 'E'
+                AND amount = :amount
+                AND DATE_FORMAT(transaction_date, '%Y-%m-%d %H:%i')
+                    = DATE_FORMAT(:transaction_date, '%Y-%m-%d %H:%i')
+                AND description = :description
+                """
+                param = {
+                    "user_id": 1,
+                    "transaction_date": date_time_db,
+                    "amount": amt_int,
+                    "description": normalize_signature(parsed.get("description") or "(영수증)")
+                }
 
-                param = {"user_id": 1,
-                         "transaction_date": date_time_db,
-                         "merchant_name": parsed.get("merchant_name"),
-                         "amount": int(amt) if amt == int(amt) else int(round(amt)),
-                         "category_id": int(target_id)}
 
                 result = conn.execute(text(query), param)
                 count = result.scalar()
