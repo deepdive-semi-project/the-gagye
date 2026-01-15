@@ -7,8 +7,6 @@ import matplotlib.pyplot as plt
 import matplotlib.font_manager as fm
 from matplotlib.ticker import FuncFormatter
 
-from prophet import Prophet
-
 from sqlalchemy import text  
 
 plt.rcParams["font.family"] = "Malgun Gothic"  # Windows
