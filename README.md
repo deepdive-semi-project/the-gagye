@@ -18,7 +18,7 @@ OCR 기술을 활용해 영수증 사진 한 장으로 지출을 자동 기록�
 ## 시작하기
 
 1. Google Cloud Vision 세팅
-2. requirement.txt
+2. 라이브러리 설치
    - pip install -r requirements.txt
 3. 앱 실행
    - streamlit run App.py
