@@ -1,0 +1,7 @@
+streamlit
+sqlalchemy
+opencv-python
+google-cloud-vision
+openai
+python-dotenv
+statsmodels
